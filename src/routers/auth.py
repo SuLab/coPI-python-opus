@@ -151,18 +151,36 @@ async def auth_callback(
         # Allowlist can promote an existing pending user to allowed
         if is_allowlisted and user.access_status != "allowed":
             user.access_status = "allowed"
+
+        # For any allowed user with no profile and no active job, recover by
+        # enqueuing a new profile generation (covers users created before this
+        # check existed, or whose earlier job was lost).
+        if user.access_status == "allowed":
             from src.models import ResearcherProfile
             profile_check = await db.execute(
                 select(ResearcherProfile.id).where(ResearcherProfile.user_id == user.id)
             )
             if profile_check.scalar_one_or_none() is None:
-                db.add(
-                    Job(
-                        type="generate_profile",
-                        user_id=user.id,
-                        payload={"user_id": str(user.id), "orcid": orcid_id},
+                job_check = await db.execute(
+                    select(Job.id).where(
+                        Job.user_id == user.id,
+                        Job.type == "generate_profile",
+                        Job.status.in_(["pending", "processing"]),
                     )
                 )
+                if job_check.scalar_one_or_none() is None:
+                    db.add(
+                        Job(
+                            type="generate_profile",
+                            user_id=user.id,
+                            payload={"user_id": str(user.id), "orcid": orcid_id},
+                        )
+                    )
+                    logger.info(
+                        "Recovering allowed user %s (%s) with no profile — enqueued job",
+                        user.id, orcid_id,
+                    )
+
         # Set claimed_at if this was a seeded profile
         if user.claimed_at is None:
             user.claimed_at = datetime.now(timezone.utc)
