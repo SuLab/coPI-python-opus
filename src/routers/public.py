@@ -255,5 +255,6 @@ async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
             "graph_json": json.dumps({"nodes": nodes, "links": links}),
             "node_count": len(nodes),
             "edge_count": len(links),
+            "proposal_count": sum(link["weight"] for link in links),
         },
     )
