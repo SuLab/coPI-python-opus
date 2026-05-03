@@ -613,7 +613,6 @@ class SimulationEngine:
         are flat discussions (no threading), so tags and replies there are
         just content for Phase 2/5 to consider, not thread-activation signals.
         """
-        settings = get_settings()
         cursor = agent.state.last_seen_cursor
 
         # Check for tags
@@ -628,8 +627,8 @@ class SimulationEngine:
             if thread_id in self._closed_thread_ids:
                 continue
             is_funding = self.message_log.is_funding_thread(thread_id)
-            if not is_funding and self._non_funding_thread_count(agent) >= settings.active_thread_threshold:
-                break
+            # Threshold gates Phase 5 (starting new threads), not Phase 3.
+            # Ignoring an explicit @-mention is worse than running over the cap.
             # Check thread participation rules
             allowed = self.message_log.get_thread_allowed_agents(thread_id)
             if allowed and agent.agent_id not in allowed:
@@ -672,8 +671,8 @@ class SimulationEngine:
             if thread_id in self._closed_thread_ids:
                 continue
             is_funding = self.message_log.is_funding_thread(thread_id)
-            if not is_funding and self._non_funding_thread_count(agent) >= settings.active_thread_threshold:
-                break
+            # Threshold gates Phase 5 (starting new threads), not Phase 3.
+            # Ghosting a reply to our own post is worse than running over the cap.
             # Check thread participation rules
             allowed = self.message_log.get_thread_allowed_agents(thread_id)
             if allowed and len(allowed) >= 2 and agent.agent_id not in allowed:
@@ -726,6 +725,12 @@ class SimulationEngine:
                 thread.thread_id, agent.agent_id, agent.state.last_seen_cursor,
             )
             if has_new or thread.has_pending_reply:
+                # Promote to durable flag so a failed/empty/exception reply
+                # attempt is retried on the next turn. The cursor advances
+                # unconditionally each turn, so has_new can't be relied on
+                # for retry — only has_pending_reply persists. Successful
+                # replies clear this back to False.
+                thread.has_pending_reply = True
                 threads_to_reply.append(thread)
 
         if not threads_to_reply:
@@ -2342,9 +2347,6 @@ class SimulationEngine:
                     continue
                 if thread_id in agent.state.active_threads:
                     continue
-                # Only count thread replies (not root posts without replies)
-                if entry.thread_ts is None:
-                    continue
                 # Skip thread reconstruction for collab_private channels —
                 # discussion in those channels is flat, not threaded, so
                 # there shouldn't be an active_thread at all. Any threaded
@@ -2352,6 +2354,14 @@ class SimulationEngine:
                 # not reactivated in-memory.
                 if self._channel_visibility.get(entry.channel) == VISIBILITY_COLLAB_PRIVATE:
                     continue
+                # Skip a root post that has no replies — nothing to restore.
+                # (Root posts that DO have replies must be restored: a reply
+                # arriving while we were at the active-thread cap could have
+                # been dropped from Phase 3 and would otherwise be ghosted.)
+                if entry.thread_ts is None:
+                    history = self.message_log.get_thread_history(thread_id)
+                    if len(history) <= 1:
+                        continue
                 # Find the other agent in this thread
                 root = self.message_log.get_entry(thread_id)
                 if not root:
