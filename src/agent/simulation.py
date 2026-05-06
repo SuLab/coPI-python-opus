@@ -51,6 +51,42 @@ PILOT_LABS = [
     {"id": "forli", "name": "ForliBot", "pi": "Stefano Forli"},
     {"id": "deniz", "name": "DenizBot", "pi": "Ashok Deniz"},
     {"id": "lairson", "name": "LairsonBot", "pi": "Luke Lairson"},
+    {"id": "azumaya", "name": "AzumayaBot", "pi": "Caleigh Azumaya"},
+    {"id": "badran", "name": "BadranBot", "pi": "Ahmed Badran"},
+    {"id": "capra", "name": "CapraBot", "pi": "John Capra"},
+    {"id": "craik", "name": "CraikBot", "pi": "Charles Craik"},
+    {"id": "echeverria", "name": "EcheverriaBot", "pi": "Ignacia Echeverria"},
+    {"id": "fraser", "name": "FraserBot", "pi": "James Fraser"},
+    {"id": "kern", "name": "KernBot", "pi": "Dorothee Kern"},
+    {"id": "kim", "name": "KimBot", "pi": "Peter Kim"},
+    {"id": "larabell", "name": "LarabellBot", "pi": "Carolyn Larabell"},
+    {"id": "lasker", "name": "LaskerBot", "pi": "Keren Lasker"},
+    {"id": "lippi", "name": "LippiBot", "pi": "Giordano Lippi"},
+    {"id": "macrae", "name": "MacRaeBot", "pi": "Ian MacRae"},
+    {"id": "maillie", "name": "MailieBot", "pi": "Colleen Maillie"},
+    {"id": "manglik", "name": "ManglikBot", "pi": "Aashish Manglik"},
+    {"id": "millar", "name": "MillarBot", "pi": "David Millar"},
+    {"id": "miller", "name": "MillerBot", "pi": "Shannon Miller"},
+    {"id": "minor", "name": "MinorBot", "pi": "Daniel Minor"},
+    {"id": "moore", "name": "MooreBot", "pi": "Jonathan Moore"},
+    {"id": "mravic", "name": "MravicBot", "pi": "Marco Mravic"},
+    {"id": "nomura", "name": "NomuraBot", "pi": "Daniel Nomura"},
+    {"id": "paulson", "name": "PaulsonBot", "pi": "Jim Paulson"},
+    {"id": "pwu", "name": "PengWuBot", "pi": "Peng Wu"},
+    {"id": "roe", "name": "RoeBot", "pi": "Leah Tang Roe"},
+    {"id": "sali", "name": "SaliBot", "pi": "Andrej Sali"},
+    {"id": "santi", "name": "SantiBot", "pi": "Daniel Santi"},
+    {"id": "seiple", "name": "SeippleBot", "pi": "Ian Seiple"},
+    {"id": "stroud", "name": "StroudBot", "pi": "Robert Stroud"},
+    {"id": "susa", "name": "SusaBot", "pi": "Katherine Susa"},
+    {"id": "wells", "name": "WellsBot", "pi": "James Wells"},
+    {"id": "williams", "name": "WilliamsBot", "pi": "Michael Williams"},
+    {"id": "williamson", "name": "WilliamsonBot", "pi": "James Williamson"},
+    {"id": "wilson", "name": "WilsonBot", "pi": "Ian Wilson"},
+    {"id": "yeager", "name": "YeagerBot", "pi": "Mark Yeager"},
+    {"id": "zaro", "name": "ZaroBot", "pi": "Balyn Zaro"},
+    {"id": "hogenesch", "name": "HogeneschBot", "pi": "John Hogenesch"},
+    {"id": "alanjary", "name": "AlanjaryBot", "pi": "Mohammad Alanjary"},
 ]
 
 # Keywords for channel-profile matching
@@ -95,6 +131,8 @@ class SimulationEngine:
         session_factory=None,
         simulation_run_id: uuid.UUID | None = None,
         reset_cursors: bool = False,
+        focus_agent: str | None = None,
+        reset_focus_cursor: bool = False,
     ):
         self.agents = {a.agent_id: a for a in agents}
         self.slack_clients = slack_clients
@@ -103,6 +141,8 @@ class SimulationEngine:
         self.session_factory = session_factory
         self.simulation_run_id = simulation_run_id
         self._reset_cursors = reset_cursors
+        self._focus_agent = focus_agent
+        self._reset_focus_cursor = reset_focus_cursor
 
         self._start_time: datetime | None = None
         self._running = False
@@ -167,6 +207,23 @@ class SimulationEngine:
             if not self.message_log.is_funding_thread(t.thread_id)
         )
 
+    def _effective_thread_threshold(self, agent: Agent) -> int:
+        """Active-thread threshold — 3× higher for the focus agent."""
+        base = get_settings().active_thread_threshold
+        if self._focus_agent and agent.agent_id == self._focus_agent:
+            return base * 3
+        return base
+
+    def _is_agent_blocked(self, agent: Agent) -> bool:
+        """Return True if the agent is blocked from regular (non-funding) Phase 5 activity."""
+        at_threshold = self._non_funding_thread_count(agent) >= self._effective_thread_threshold(agent)
+        unreviewed_limit = 10 if self._focus_agent and agent.agent_id == self._focus_agent else 1
+        unreviewed_count = sum(
+            1 for p in agent.state.pending_proposals
+            if not p.reviewed and not self.message_log.is_funding_thread(p.thread_id)
+        )
+        return at_threshold or unreviewed_count >= unreviewed_limit
+
     def _count_today_posts(self, agent: Agent) -> int:
         """Count top-level posts by this agent in the current Pacific time day."""
         from zoneinfo import ZoneInfo
@@ -221,6 +278,10 @@ class SimulationEngine:
 
             # Sync proposal reviews from web app
             await self._sync_proposal_reviews_from_db()
+
+            # Sync paused state from DB every 10 turns
+            if turn_count % 10 == 0:
+                await self._sync_paused_state_from_db()
 
             # Select agent
             agent = self._select_agent()
@@ -309,7 +370,7 @@ class SimulationEngine:
         now = time.time()
         candidates = [
             a for a in self.agents.values()
-            if self._agent_within_budget(a)
+            if self._agent_within_budget(a) and not a.is_paused
         ]
         if not candidates:
             return None
@@ -320,6 +381,8 @@ class SimulationEngine:
             skips = a.state.consecutive_phase5_skips
             if skips >= 3:
                 w /= 2 ** (skips - 2)
+            if self._focus_agent and a.agent_id == self._focus_agent:
+                w *= 3  # focus agent gets ~3x more turns
             weights.append(w)
         return random.choices(candidates, weights=weights, k=1)[0]
 
@@ -422,6 +485,8 @@ class SimulationEngine:
             channels=agent.state.subscribed_channels,
             exclude_agent_id=agent.agent_id,
         )
+        if self._focus_agent and agent.agent_id != self._focus_agent:
+            new_posts = [p for p in new_posts if p.sender_agent_id == self._focus_agent]
 
         # Exclude posts already in interesting_posts or active_threads
         known_ids = {p.post_id for p in agent.state.interesting_posts}
@@ -430,6 +495,11 @@ class SimulationEngine:
 
         if not new_posts:
             logger.debug("[%s] Phase 2: No new posts to evaluate", agent.agent_id)
+            return
+
+        # Skip LLM scan if blocked and no incoming funding posts (saves wasted API calls)
+        if self._is_agent_blocked(agent) and not any(is_funding_post(p.content) for p in new_posts):
+            logger.debug("[%s] Phase 2: Skipped scan (blocked, no funding posts)", agent.agent_id)
             return
 
         # Build post data for LLM
@@ -530,6 +600,8 @@ class SimulationEngine:
 
         # Check for tags
         tagged_entries = self.message_log.get_tags_for_agent(agent.bot_name, cursor)
+        if self._focus_agent and agent.agent_id != self._focus_agent:
+            tagged_entries = [e for e in tagged_entries if e.sender_agent_id == self._focus_agent]
         for entry in tagged_entries:
             thread_id = entry.thread_ts or entry.ts
             if thread_id in agent.state.active_threads:
@@ -537,8 +609,8 @@ class SimulationEngine:
             if thread_id in self._closed_thread_ids:
                 continue
             is_funding = self.message_log.is_funding_thread(thread_id)
-            if not is_funding and self._non_funding_thread_count(agent) >= settings.active_thread_threshold:
-                break
+            if not is_funding and self._non_funding_thread_count(agent) >= self._effective_thread_threshold(agent):
+                continue
             # Check thread participation rules
             allowed = self.message_log.get_thread_allowed_agents(thread_id)
             if allowed and agent.agent_id not in allowed:
@@ -578,8 +650,8 @@ class SimulationEngine:
             if thread_id in self._closed_thread_ids:
                 continue
             is_funding = self.message_log.is_funding_thread(thread_id)
-            if not is_funding and self._non_funding_thread_count(agent) >= settings.active_thread_threshold:
-                break
+            if not is_funding and self._non_funding_thread_count(agent) >= self._effective_thread_threshold(agent):
+                continue
             # Check thread participation rules
             allowed = self.message_log.get_thread_allowed_agents(thread_id)
             if allowed and len(allowed) >= 2 and agent.agent_id not in allowed:
@@ -949,12 +1021,7 @@ class SimulationEngine:
             return
 
         # Check preconditions
-        at_thread_threshold = self._non_funding_thread_count(agent) >= settings.active_thread_threshold
-        has_unreviewed_non_funding = any(
-            not p.reviewed and not self.message_log.is_funding_thread(p.thread_id)
-            for p in agent.state.pending_proposals
-        )
-        blocked_for_regular = at_thread_threshold or has_unreviewed_non_funding
+        blocked_for_regular = self._is_agent_blocked(agent)
 
         # Check for PI-priority posts — these bypass random skip and blocking
         has_pi_priority = any(p.pi_priority for p in agent.state.interesting_posts)
@@ -1174,11 +1241,24 @@ class SimulationEngine:
 
             else:
                 # New top-level post
+                tagged_agent = action_data.get("tagged_agent")
+
+                # Focus mode: non-focus agents may only tag the focus agent
+                if (
+                    self._focus_agent
+                    and agent.agent_id != self._focus_agent
+                    and tagged_agent
+                    and tagged_agent != self._focus_agent
+                ):
+                    logger.info(
+                        "[%s] Phase 5: Blocked new post tagging non-focus agent %s (focus mode)",
+                        agent.agent_id, tagged_agent,
+                    )
+                    return
+
                 await self._post_message(agent.agent_id, channel, message_text)
                 agent.message_count += 1
 
-                # Check if it tags another agent
-                tagged_agent = action_data.get("tagged_agent")
                 if tagged_agent:
                     logger.info(
                         "[%s] Phase 5: New post in #%s tagging @%s",
@@ -1849,6 +1929,18 @@ class SimulationEngine:
                 history = self.message_log.get_thread_history(thread_id)
                 last_sender = history[-1].sender_agent_id if history else None
                 has_pending = last_sender is not None and last_sender != aid
+
+                # Expire threads where this agent sent last and no reply arrived in 6h
+                if not has_pending:
+                    last_ts = history[-1].posted_at if history else 0.0
+                    idle_hours = (time.time() - last_ts) / 3600
+                    if idle_hours > 6:
+                        logger.info(
+                            "[%s] Skipping stale thread %s (idle %.0fh, waiting for %s)",
+                            aid, thread_id, idle_hours, other_id,
+                        )
+                        continue
+
                 agent.state.active_threads[thread_id] = ThreadState(
                     thread_id=thread_id,
                     channel=entry.channel,
@@ -1943,6 +2035,10 @@ class SimulationEngine:
             latest_ts = max(e.posted_at for e in self.message_log._entries)
             for agent in self.agents.values():
                 agent.state.last_seen_cursor = latest_ts
+
+        if self._reset_focus_cursor and self._focus_agent and self._focus_agent in self.agents:
+            self.agents[self._focus_agent].state.last_seen_cursor = 0
+            logger.info("--reset-focus-cursor: %s will re-scan all Slack history", self._focus_agent)
 
         # Log rebuild summary
         for agent in self.agents.values():
@@ -2150,6 +2246,29 @@ class SimulationEngine:
                 )
         except Exception as exc:
             logger.debug("Proposal review sync failed: %s", exc)
+
+    async def _sync_paused_state_from_db(self) -> None:
+        """Refresh each in-memory agent's is_paused flag from the DB."""
+        if not self.session_factory:
+            return
+        try:
+            async with self.session_factory() as db:
+                from sqlalchemy import select as sa_select
+                from src.models import AgentRegistry
+                result = await db.execute(
+                    sa_select(AgentRegistry.agent_id, AgentRegistry.is_paused)
+                )
+                rows = result.all()
+            for row in rows:
+                agent = self.agents.get(row.agent_id)
+                if agent and agent.is_paused != row.is_paused:
+                    agent.is_paused = row.is_paused
+                    logger.info(
+                        "[%s] is_paused updated to %s from DB",
+                        row.agent_id, row.is_paused,
+                    )
+        except Exception as exc:
+            logger.debug("Paused state sync failed: %s", exc)
 
     async def _log_message(
         self,

@@ -36,9 +36,11 @@ def main(
     no_db: bool = typer.Option(False, "--no-db", help="Skip database logging"),
     fresh: bool = typer.Option(False, "--fresh", help="Wipe simulation data and start fresh"),
     reset_cursors: bool = typer.Option(False, "--reset-cursors", help="Reset scan cursors so agents re-read all posts"),
+    focus_agent: str = typer.Option("", "--focus-agent", help="Agent ID to spotlight: only this agent sees all others; all others see only this agent"),
+    reset_focus_cursor: bool = typer.Option(False, "--reset-focus-cursor", help="Reset only the focus agent's cursor to 0 so it re-scans all history"),
 ):
     """Run the turn-based agent simulation."""
-    asyncio.run(_run_simulation(max_runtime, budget, mock, no_db, fresh, reset_cursors))
+    asyncio.run(_run_simulation(max_runtime, budget, mock, no_db, fresh, reset_cursors, focus_agent or None, reset_focus_cursor))
 
 
 async def _run_simulation(
@@ -48,6 +50,8 @@ async def _run_simulation(
     no_db: bool,
     fresh: bool,
     reset_cursors: bool = False,
+    focus_agent: str | None = None,
+    reset_focus_cursor: bool = False,
 ) -> None:
     settings = get_settings()
 
@@ -151,6 +155,13 @@ async def _run_simulation(
 
     # Create simulation engine
     runtime_label = f"{max_runtime}m" if max_runtime > 0 else "indefinite"
+    if focus_agent:
+        valid_ids = {lab["id"] for lab in PILOT_LABS}
+        if focus_agent not in valid_ids:
+            logger.error("--focus-agent '%s' is not a valid agent ID. Valid IDs: %s", focus_agent, sorted(valid_ids))
+            return
+        logger.info("Focus mode: only '%s' sees all agents; all others see only '%s'", focus_agent, focus_agent)
+
     sim_engine = SimulationEngine(
         agents=agents,
         slack_clients=slack_clients,
@@ -159,6 +170,8 @@ async def _run_simulation(
         session_factory=session_factory,
         simulation_run_id=simulation_run_id,
         reset_cursors=reset_cursors,
+        focus_agent=focus_agent,
+        reset_focus_cursor=reset_focus_cursor,
     )
 
     # Handle shutdown signals

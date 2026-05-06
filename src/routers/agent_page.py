@@ -264,6 +264,49 @@ async def agent_dashboard(
     )
 
 
+# --------------------------------------------------------------------------
+# Pause / resume agent activity (owner only)
+# --------------------------------------------------------------------------
+
+
+@router.post("/{agent_id}/pause")
+async def pause_agent(
+    agent_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pause an agent — stops it from being selected in the simulation."""
+    agent, is_owner = await get_agent_with_access(agent_id, db, current_user)
+    if not is_owner:
+        raise HTTPException(status_code=403, detail="Only the PI can pause their agent")
+    if agent.status != "active":
+        return RedirectResponse(url="/agent", status_code=302)
+    agent.is_paused = True
+    await db.commit()
+    logger.info("Agent %s paused by %s", agent_id, current_user.name)
+    return RedirectResponse(url=f"/agent/{agent_id}/dashboard", status_code=302)
+
+
+@router.post("/{agent_id}/resume")
+async def resume_agent(
+    agent_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resume a paused agent — allows it to be selected in the simulation again."""
+    agent, is_owner = await get_agent_with_access(agent_id, db, current_user)
+    if not is_owner:
+        raise HTTPException(status_code=403, detail="Only the PI can resume their agent")
+    if agent.status != "active":
+        return RedirectResponse(url="/agent", status_code=302)
+    agent.is_paused = False
+    await db.commit()
+    logger.info("Agent %s resumed by %s", agent_id, current_user.name)
+    return RedirectResponse(url=f"/agent/{agent_id}/dashboard", status_code=302)
+
+
 def _user_slack_id_in_list(user: User, slack_ids: list[str]) -> bool:
     """Check if a user's email maps to any Slack ID in the list (heuristic)."""
     # We can't check without calling Slack API, so for now always return False

@@ -25,13 +25,39 @@
             <h1 class="text-2xl font-bold text-gray-900">{{ agent.bot_name }}</h1>
             <p class="text-sm text-gray-500">Representing the {{ agent.pi_name }} lab</p>
         </div>
-        <span class="px-3 py-1 rounded-full text-sm
-            {% if agent.status == 'active' %}bg-green-100 text-green-700
-            {% elif agent.status == 'suspended' %}bg-amber-100 text-amber-700
-            {% else %}bg-gray-100 text-gray-600{% endif %}">
-            {{ agent.status | capitalize }}
-        </span>
+        <div class="flex items-center gap-3">
+            <span class="px-3 py-1 rounded-full text-sm
+                {% if agent.is_paused %}bg-yellow-100 text-yellow-700
+                {% elif agent.status == 'active' %}bg-green-100 text-green-700
+                {% elif agent.status == 'suspended' %}bg-amber-100 text-amber-700
+                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {% if agent.is_paused %}Paused{% else %}{{ agent.status | capitalize }}{% endif %}
+            </span>
+            {% if is_owner %}
+            {% if agent.is_paused %}
+            <form method="POST" action="/agent/{{ agent.agent_id }}/resume">
+                <button type="submit"
+                        class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700">
+                    Resume Agent
+                </button>
+            </form>
+            {% else %}
+            <form method="POST" action="/agent/{{ agent.agent_id }}/pause">
+                <button type="submit"
+                        class="px-3 py-1.5 bg-yellow-500 text-white text-sm rounded-md hover:bg-yellow-600">
+                    Pause Agent
+                </button>
+            </form>
+            {% endif %}
+            {% endif %}
+        </div>
     </div>
+
+    {% if agent.is_paused %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6 text-sm text-yellow-800">
+        Your agent is currently paused and will not participate in the simulation until resumed.
+    </div>
+    {% endif %}
 
     {% if not is_owner %}
     <!-- Delegate banner -->

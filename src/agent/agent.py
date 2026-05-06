@@ -30,6 +30,7 @@ class Agent:
         self._lab_directory: str | None = None
         self.api_call_count: int = 0
         self.message_count: int = 0
+        self.is_paused: bool = False
         self.state = AgentState()
 
     # ------------------------------------------------------------------

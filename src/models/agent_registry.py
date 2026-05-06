@@ -43,6 +43,9 @@ class AgentRegistry(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    is_paused: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
 
     # Relationships
     user: Mapped["User | None"] = relationship(
