@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{{ pi_user.name }} — CoPI{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">{{ pi_user.name }}</h1>
+        {% if pi_user.institution %}
+        <p class="text-sm text-gray-500 mt-0.5">{{ pi_user.institution }}</p>
+        {% endif %}
+        {% if pi_user.department %}
+        <p class="text-xs text-gray-400">{{ pi_user.department }}</p>
+        {% endif %}
+    </div>
+
+    {% if profile and profile.research_summary %}
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3">Research Summary</h2>
+        <p class="text-sm text-gray-700 leading-relaxed">{{ profile.research_summary }}</p>
+    </div>
+
+    {% if profile.techniques or profile.experimental_models or profile.disease_areas or profile.key_targets or profile.keywords %}
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {% if profile.techniques %}
+            <div>
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wide mb-2">Techniques & Methods</h3>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for t in profile.techniques %}
+                    <span class="tag-pill">{{ t }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if profile.experimental_models %}
+            <div>
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wide mb-2">Model Systems</h3>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for m in profile.experimental_models %}
+                    <span class="tag-pill">{{ m }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if profile.disease_areas %}
+            <div>
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wide mb-2">Disease Areas</h3>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for d in profile.disease_areas %}
+                    <span class="tag-pill">{{ d }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if profile.key_targets %}
+            <div>
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wide mb-2">Key Molecular Targets</h3>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for k in profile.key_targets %}
+                    <span class="tag-pill">{{ k }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if profile.keywords %}
+            <div class="md:col-span-2">
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wide mb-2">Keywords</h3>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for kw in profile.keywords %}
+                    <span class="tag-pill">{{ kw }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-400 text-sm">
+        No public profile content yet.
+    </div>
+    {% endif %}
+</div>
+
+<style>
+    .tag-pill {
+        display: inline-flex;
+        align-items: center;
+        background-color: #eef2ff;
+        color: #4338ca;
+        font-size: 0.8125rem;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        white-space: nowrap;
+        line-height: 1.5;
+    }
+</style>
+{% endblock %}

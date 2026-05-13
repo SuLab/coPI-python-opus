@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -163,6 +163,7 @@ class ThreadDecision(Base):
     decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     def __repr__(self) -> str:
         return f"<ThreadDecision thread={self.thread_id} outcome={self.outcome}>"

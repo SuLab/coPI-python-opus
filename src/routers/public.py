@@ -1,16 +1,17 @@
-"""Public-facing routes: landing page, waitlist, access-pending."""
+"""Public-facing routes: landing page, waitlist, access-pending, researcher profiles."""
 
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, WaitlistSignup
+from src.dependencies import get_current_user
+from src.models import AgentRegistry, ResearcherProfile, User, WaitlistSignup
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,6 +81,38 @@ async def waitlist_submit(
         request,
         "landing.html",
         {"request": request, "waitlist_success": True},
+    )
+
+
+@router.get("/researcher/{agent_id}", response_class=HTMLResponse)
+async def view_researcher_profile(
+    agent_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read-only public profile view accessible to any logged-in user."""
+    agent_result = await db.execute(
+        select(AgentRegistry).where(AgentRegistry.agent_id == agent_id)
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent or agent.status != "active":
+        raise HTTPException(status_code=404, detail="Researcher not found")
+
+    profile_result = await db.execute(
+        select(ResearcherProfile).where(ResearcherProfile.user_id == agent.user_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    pi_result = await db.execute(select(User).where(User.id == agent.user_id))
+    pi_user = pi_result.scalar_one_or_none()
+    if not pi_user:
+        raise HTTPException(status_code=404, detail="Researcher not found")
+
+    return templates.TemplateResponse(
+        request,
+        "researcher/view.html",
+        {"request": request, "current_user": current_user, "agent": agent, "profile": profile, "pi_user": pi_user},
     )
 
 

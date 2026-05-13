@@ -10,7 +10,7 @@ Templates use pi_a.name if the FK is populated, otherwise fall back to pi_a_name
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +43,7 @@ class MatchmakerProposal(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     pi_a: Mapped["User | None"] = relationship("User", foreign_keys=[pi_a_id])
     pi_b: Mapped["User | None"] = relationship("User", foreign_keys=[pi_b_id])

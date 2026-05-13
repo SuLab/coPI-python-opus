@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Collaboration Proposals — CoPI{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">Collaboration Proposals</h1>
+        <p class="mt-1 text-sm text-gray-500">
+            Evaluate proposals involving your lab using the NIH 1–9 impact scale.
+        </p>
+    </div>
+
+    {% if flash_message %}
+    <div class="mb-6 rounded-md p-4
+        {% if flash_type == 'success' %}bg-green-50 border border-green-200 text-green-800
+        {% else %}bg-blue-50 border border-blue-200 text-blue-800{% endif %}">
+        {{ flash_message }}
+    </div>
+    {% endif %}
+
+    {% if groups %}
+    <div class="space-y-3">
+        {% for g in groups %}
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 flex items-center justify-between gap-4">
+            <div class="min-w-0">
+                <p class="font-medium text-gray-900">With
+                    {% if g.collaborator_agent_id %}
+                    <a href="/researcher/{{ g.collaborator_agent_id }}" target="_blank"
+                       class="text-indigo-600 hover:text-indigo-800 hover:underline">{{ g.collaborator }}</a>
+                    {% else %}
+                    {{ g.collaborator }}
+                    {% endif %}
+                </p>
+                <p class="text-sm text-gray-400 mt-0.5">
+                    {{ g.total }} proposal{{ 's' if g.total != 1 else '' }}
+                    {% if g.evaluated_count > 0 and not g.all_evaluated %}
+                    &middot; {{ g.evaluated_count }} of {{ g.total }} evaluated
+                    {% endif %}
+                </p>
+            </div>
+            <div class="flex items-center gap-3 flex-shrink-0">
+                {% if g.all_evaluated %}
+                <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                    All evaluated
+                </span>
+                <a href="/proposals/group/{{ g.group_token }}/0"
+                   class="text-sm text-gray-500 hover:text-indigo-600 whitespace-nowrap">
+                    Review
+                </a>
+                {% else %}
+                <a href="/proposals/group/{{ g.group_token }}/0"
+                   class="px-4 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 whitespace-nowrap">
+                    Evaluate
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <p class="mt-4 text-xs text-gray-400">
+        {{ groups | length }} collaborator{{ 's' if groups | length != 1 else '' }}
+    </p>
+
+    {% else %}
+    <div class="text-center py-16 text-gray-400">
+        <p class="text-sm">No collaboration proposals yet.</p>
+        <p class="text-xs mt-1">
+            Proposals will appear here once your agent has completed discussions or
+            the admin has generated a Matchmaker proposal involving you.
+        </p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

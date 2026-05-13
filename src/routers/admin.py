@@ -1,11 +1,12 @@
 """Admin dashboard router."""
 
 import logging
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from src.models import (
     Job,
     LlmCallLog,
     MatchmakerProposal,
+    PiProposalEvaluation,
     PodcastEpisode,
     PodcastPreferences,
     Publication,
@@ -557,6 +559,10 @@ async def admin_discussions(
     for d in all_decisions:
         decision_map[d.thread_id] = d
 
+    # Track all root-post thread IDs before any filtering so orphan detection
+    # is accurate even when a status/channel filter removes some threads.
+    all_root_thread_ids = {post.message_ts for post in root_posts}
+
     # Build thread list
     threads = []
     available_channels = set()
@@ -620,10 +626,10 @@ async def admin_discussions(
         else:
             t["reviews"] = []
 
-    # Add orphaned decisions (thread_decisions with no matching root post in agent_messages)
-    known_thread_ids = {t["message_ts"] for t in threads}
+    # Add orphaned decisions (thread_decisions with no matching root post in agent_messages).
+    # Use all_root_thread_ids (pre-filter) so filtered-out threads aren't mistaken for orphans.
     for td in all_decisions:
-        if td.thread_id not in known_thread_ids:
+        if td.thread_id not in all_root_thread_ids:
             other_agents = replier_map.get(td.thread_id, set())
             poster_id = td.agent_a
             replier = td.agent_b if td.agent_a == poster_id else td.agent_a
@@ -1628,3 +1634,494 @@ async def admin_discussions_clear(
     await db.execute(sql_delete(ThreadDecision))
     await db.commit()
     return RedirectResponse(url="/admin/discussions", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# PI Proposal Evaluations
+# ---------------------------------------------------------------------------
+
+def _extract_title_admin(text: str | None) -> str | None:
+    if not text:
+        return None
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            return re.sub(r"^#+\s*", "", line).strip() or None
+        if line:
+            return line[:120]
+    return None
+
+
+@router.get("/evaluations", response_class=HTMLResponse)
+async def admin_evaluations(
+    request: Request,
+    origin_filter: str | None = None,
+    pi_filter: str | None = None,
+    impact_min: str | None = None,
+    impact_max: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_admin_user),
+):
+    """Admin view of all PI proposal evaluations."""
+    impact_min_val = int(impact_min) if impact_min and impact_min.strip() else None
+    impact_max_val = int(impact_max) if impact_max and impact_max.strip() else None
+
+    # Dropdown: all allowed users, ordered by name
+    all_evaluators_result = await db.execute(
+        select(User).where(User.access_status == "allowed").order_by(User.name)
+    )
+    all_evaluators = all_evaluators_result.scalars().all()
+
+    # Resolve selected PI's names (user.name + agent.pi_name) for collaborator matching
+    selected_pi_id = None
+    selected_pi_names: set[str] = set()
+    if pi_filter:
+        try:
+            import uuid as _uuid
+            selected_pi_id = _uuid.UUID(pi_filter)
+            pi_user_result = await db.execute(select(User).where(User.id == selected_pi_id))
+            pi_user = pi_user_result.scalar_one_or_none()
+            if pi_user:
+                selected_pi_names.add(pi_user.name)
+            pi_agent_result = await db.execute(
+                select(AgentRegistry).where(AgentRegistry.user_id == selected_pi_id)
+            )
+            pi_agent_rec = pi_agent_result.scalar_one_or_none()
+            if pi_agent_rec:
+                selected_pi_names.add(pi_agent_rec.pi_name)
+        except ValueError:
+            selected_pi_id = None
+
+    query = (
+        select(PiProposalEvaluation)
+        .options(
+            selectinload(PiProposalEvaluation.user),
+            selectinload(PiProposalEvaluation.thread_decision),
+            selectinload(PiProposalEvaluation.matchmaker_proposal)
+            .selectinload(MatchmakerProposal.pi_a),
+            selectinload(PiProposalEvaluation.matchmaker_proposal)
+            .selectinload(MatchmakerProposal.pi_b),
+        )
+        .order_by(PiProposalEvaluation.evaluated_at.desc())
+    )
+
+    if origin_filter in ("agent", "matchmaker"):
+        query = query.where(PiProposalEvaluation.proposal_type == origin_filter)
+    if impact_min_val is not None:
+        query = query.where(PiProposalEvaluation.score_overall_impact >= impact_min_val)
+    if impact_max_val is not None:
+        query = query.where(PiProposalEvaluation.score_overall_impact <= impact_max_val)
+    if date_from:
+        try:
+            df = date.fromisoformat(date_from)
+            query = query.where(PiProposalEvaluation.evaluated_at >= df)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = date.fromisoformat(date_to) + timedelta(days=1)
+            query = query.where(PiProposalEvaluation.evaluated_at < dt)
+        except ValueError:
+            pass
+
+    result = await db.execute(query)
+    evaluations = result.scalars().all()
+
+    # Resolve collaborator names for agent evaluations
+    agent_ids_needed: set[str] = set()
+    for ev in evaluations:
+        if ev.proposal_type == "agent" and ev.thread_decision:
+            agent_ids_needed.add(ev.thread_decision.agent_a)
+            agent_ids_needed.add(ev.thread_decision.agent_b)
+
+    # Also need agent info for the selected PI to match agent proposals by collaborator
+    if selected_pi_id and not selected_pi_names:
+        pass  # already handled above
+    agent_reg_map: dict[str, AgentRegistry] = {}
+    if agent_ids_needed:
+        ar_result = await db.execute(
+            select(AgentRegistry)
+            .options(selectinload(AgentRegistry.user))
+            .where(AgentRegistry.agent_id.in_(agent_ids_needed))
+        )
+        agent_reg_map = {a.agent_id: a for a in ar_result.scalars().all()}
+
+    # Build per-user name lookup covering evaluators + matchmaker collaborators
+    all_relevant_user_ids = {ev.user_id for ev in evaluations}
+    for ev in evaluations:
+        if ev.matchmaker_proposal:
+            mp = ev.matchmaker_proposal
+            if mp.pi_a_id:
+                all_relevant_user_ids.add(mp.pi_a_id)
+            if mp.pi_b_id:
+                all_relevant_user_ids.add(mp.pi_b_id)
+    evaluator_agent_result = await db.execute(
+        select(AgentRegistry).where(AgentRegistry.user_id.in_(all_relevant_user_ids))
+    )
+    evaluator_agent_map: dict = {a.user_id: a for a in evaluator_agent_result.scalars().all()}
+
+    eval_rows = []
+    for ev in evaluations:
+        if ev.proposal_type == "agent" and ev.thread_decision:
+            td = ev.thread_decision
+            title = _extract_title_admin(td.summary_text) or "Collaboration Proposal"
+            collaborator = "Unknown"
+            collaborator_agent_id = None
+            for aid in (td.agent_a, td.agent_b):
+                ar = agent_reg_map.get(aid)
+                if ar and ar.user_id != ev.user_id:
+                    collaborator = ar.user.name if ar.user else (ar.pi_name or aid)
+                    collaborator_agent_id = ar.agent_id
+                    break
+        else:
+            mp = ev.matchmaker_proposal
+            title = mp.title if mp else "Unknown"
+            collaborator_agent_id = None
+            if mp:
+                # Use evaluator's known names to determine which side they are
+                ev_names: set[str] = set()
+                if ev.user:
+                    ev_names.add(ev.user.name)
+                ev_agent = evaluator_agent_map.get(ev.user_id)
+                if ev_agent:
+                    ev_names.add(ev_agent.pi_name)
+                is_pi_a = (mp.pi_a_id == ev.user_id) or (mp.pi_a_name in ev_names)
+                collaborator = mp.name_b if is_pi_a else mp.name_a
+                collab_user_id = mp.pi_b_id if is_pi_a else mp.pi_a_id
+                collab_ar = evaluator_agent_map.get(collab_user_id) if collab_user_id else None
+                if collab_ar:
+                    collaborator_agent_id = collab_ar.agent_id
+            else:
+                collaborator = "Unknown"
+
+        eval_rows.append({"eval": ev, "title": title, "collaborator": collaborator, "collaborator_agent_id": collaborator_agent_id})
+
+    # Apply PI filter at Python level: match evaluator OR collaborator
+    if selected_pi_id and selected_pi_names:
+        eval_rows = [
+            row for row in eval_rows
+            if row["eval"].user_id == selected_pi_id
+            or row["collaborator"] in selected_pi_names
+        ]
+
+    # Summary stats computed on filtered rows
+    total_count = len(eval_rows)
+    today = date.today()
+    this_month = sum(
+        1 for row in eval_rows
+        if row["eval"].evaluated_at
+        and row["eval"].evaluated_at.date().month == today.month
+        and row["eval"].evaluated_at.date().year == today.year
+    )
+    mean_impact = (
+        sum(row["eval"].score_overall_impact for row in eval_rows) / total_count
+        if total_count else 0.0
+    )
+
+    # --- Pending proposals section (all proposals, hidden or not) ---
+    pending_td_result = await db.execute(
+        select(ThreadDecision)
+        .where(ThreadDecision.outcome == "proposal")
+        .order_by(ThreadDecision.decided_at.desc())
+    )
+    pending_tds = pending_td_result.scalars().all()
+
+    pending_mm_result = await db.execute(
+        select(MatchmakerProposal)
+        .options(selectinload(MatchmakerProposal.pi_a), selectinload(MatchmakerProposal.pi_b))
+        .order_by(MatchmakerProposal.generated_at.desc())
+    )
+    pending_mms = pending_mm_result.scalars().all()
+
+    pending_agent_ids: set[str] = {td.agent_a for td in pending_tds} | {td.agent_b for td in pending_tds}
+    pending_ar_map: dict[str, AgentRegistry] = {}
+    if pending_agent_ids:
+        par_result = await db.execute(
+            select(AgentRegistry)
+            .options(selectinload(AgentRegistry.user))
+            .where(AgentRegistry.agent_id.in_(pending_agent_ids))
+        )
+        pending_ar_map = {a.agent_id: a for a in par_result.scalars().all()}
+
+    td_cov_result = await db.execute(
+        select(PiProposalEvaluation.thread_decision_id, PiProposalEvaluation.user_id)
+        .where(PiProposalEvaluation.thread_decision_id.isnot(None))
+    )
+    td_eval_coverage = {(r[0], r[1]) for r in td_cov_result}
+
+    mm_cov_result = await db.execute(
+        select(PiProposalEvaluation.matchmaker_proposal_id, PiProposalEvaluation.user_id)
+        .where(PiProposalEvaluation.matchmaker_proposal_id.isnot(None))
+    )
+    mm_eval_coverage = {(r[0], r[1]) for r in mm_cov_result}
+
+    pending_proposals: list[dict] = []
+
+    for td in pending_tds:
+        ar_a = pending_ar_map.get(td.agent_a)
+        ar_b = pending_ar_map.get(td.agent_b)
+        name_a = (ar_a.user.name if ar_a and ar_a.user else (ar_a.pi_name or td.agent_a)) if ar_a else td.agent_a
+        name_b = (ar_b.user.name if ar_b and ar_b.user else (ar_b.pi_name or td.agent_b)) if ar_b else td.agent_b
+        uid_a = ar_a.user_id if ar_a else None
+        uid_b = ar_b.user_id if ar_b else None
+        evaluated_a = uid_a is not None and (td.id, uid_a) in td_eval_coverage
+        evaluated_b = uid_b is not None and (td.id, uid_b) in td_eval_coverage
+        if not (evaluated_a and evaluated_b):
+            pending_proposals.append({
+                "proposal_type": "agent",
+                "proposal_id": str(td.id),
+                "name_a": name_a,
+                "name_b": name_b,
+                "title": _extract_title_admin(td.summary_text) or "Collaboration Proposal",
+                "evaluated_a": evaluated_a,
+                "evaluated_b": evaluated_b,
+                "hidden": td.hidden,
+            })
+
+    for mp in pending_mms:
+        if mp.pi_a_id is not None and mp.pi_b_id is not None:
+            evaluated_a = (mp.id, mp.pi_a_id) in mm_eval_coverage
+            evaluated_b = (mp.id, mp.pi_b_id) in mm_eval_coverage
+        else:
+            eval_count = sum(1 for r in mm_eval_coverage if r[0] == mp.id)
+            evaluated_a = eval_count >= 1
+            evaluated_b = eval_count >= 2
+        if not (evaluated_a and evaluated_b):
+            pending_proposals.append({
+                "proposal_type": "matchmaker",
+                "proposal_id": str(mp.id),
+                "name_a": mp.name_a,
+                "name_b": mp.name_b,
+                "title": mp.title,
+                "evaluated_a": evaluated_a,
+                "evaluated_b": evaluated_b,
+                "hidden": mp.hidden,
+            })
+
+    return templates.TemplateResponse(
+        request,
+        "admin/evaluations.html",
+        _template_context(
+            request,
+            current_user,
+            active_admin="evaluations",
+            eval_rows=eval_rows,
+            total_count=total_count,
+            this_month=this_month,
+            mean_impact=round(mean_impact, 1),
+            origin_filter=origin_filter or "",
+            pi_filter=pi_filter or "",
+            all_evaluators=all_evaluators,
+            impact_min=impact_min_val,
+            impact_max=impact_max_val,
+            date_from=date_from or "",
+            date_to=date_to or "",
+            pending_proposals=pending_proposals,
+        ),
+    )
+
+
+@router.post("/evaluations/proposals/{proposal_type}/{proposal_id}/hide")
+async def hide_proposal(
+    proposal_type: str,
+    proposal_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_admin_user),
+):
+    """Toggle the hidden flag on a proposal (affects /proposals PI-facing page)."""
+    if proposal_type == "agent":
+        result = await db.execute(select(ThreadDecision).where(ThreadDecision.id == proposal_id))
+        proposal = result.scalar_one_or_none()
+    elif proposal_type == "matchmaker":
+        result = await db.execute(select(MatchmakerProposal).where(MatchmakerProposal.id == proposal_id))
+        proposal = result.scalar_one_or_none()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid proposal type")
+
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    proposal.hidden = not proposal.hidden
+    await db.commit()
+    return RedirectResponse(url="/admin/evaluations", status_code=302)
+
+
+@router.get("/evaluations/export.json")
+async def admin_evaluations_export(
+    request: Request,
+    origin_filter: str | None = None,
+    pi_filter: str | None = None,
+    impact_min: str | None = None,
+    impact_max: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_admin_user),
+):
+    """Export all matching PI evaluations as JSON."""
+    impact_min_val = int(impact_min) if impact_min and impact_min.strip() else None
+    impact_max_val = int(impact_max) if impact_max and impact_max.strip() else None
+    query = (
+        select(PiProposalEvaluation)
+        .options(
+            selectinload(PiProposalEvaluation.user),
+            selectinload(PiProposalEvaluation.thread_decision),
+            selectinload(PiProposalEvaluation.matchmaker_proposal)
+            .selectinload(MatchmakerProposal.pi_a),
+            selectinload(PiProposalEvaluation.matchmaker_proposal)
+            .selectinload(MatchmakerProposal.pi_b),
+        )
+        .order_by(PiProposalEvaluation.evaluated_at.desc())
+    )
+
+    if origin_filter in ("agent", "matchmaker"):
+        query = query.where(PiProposalEvaluation.proposal_type == origin_filter)
+    if pi_filter:
+        try:
+            import uuid as _uuid
+            query = query.where(PiProposalEvaluation.user_id == _uuid.UUID(pi_filter))
+        except ValueError:
+            pass
+    if impact_min_val is not None:
+        query = query.where(PiProposalEvaluation.score_overall_impact >= impact_min_val)
+    if impact_max_val is not None:
+        query = query.where(PiProposalEvaluation.score_overall_impact <= impact_max_val)
+    if date_from:
+        try:
+            df = date.fromisoformat(date_from)
+            query = query.where(PiProposalEvaluation.evaluated_at >= df)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = date.fromisoformat(date_to) + timedelta(days=1)
+            query = query.where(PiProposalEvaluation.evaluated_at < dt)
+        except ValueError:
+            pass
+
+    result = await db.execute(query)
+    evaluations = result.scalars().all()
+
+    # Resolve agent registry for collaborator names
+    agent_ids_needed: set[str] = set()
+    for ev in evaluations:
+        if ev.proposal_type == "agent" and ev.thread_decision:
+            agent_ids_needed.add(ev.thread_decision.agent_a)
+            agent_ids_needed.add(ev.thread_decision.agent_b)
+
+    agent_reg_map: dict[str, AgentRegistry] = {}
+    if agent_ids_needed:
+        ar_result = await db.execute(
+            select(AgentRegistry)
+            .options(selectinload(AgentRegistry.user))
+            .where(AgentRegistry.agent_id.in_(agent_ids_needed))
+        )
+        agent_reg_map = {a.agent_id: a for a in ar_result.scalars().all()}
+
+    def _ts(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    records = []
+    for ev in evaluations:
+        if ev.proposal_type == "agent" and ev.thread_decision:
+            td = ev.thread_decision
+            title = _extract_title_admin(td.summary_text) or "Collaboration Proposal"
+            collaborator_name = "Unknown"
+            collaborator_user_id = None
+            collaborator_institution = None
+            for aid in (td.agent_a, td.agent_b):
+                ar = agent_reg_map.get(aid)
+                if ar and ar.user_id != ev.user_id:
+                    if ar.user:
+                        collaborator_name = ar.user.name
+                        collaborator_user_id = str(ar.user.id)
+                        collaborator_institution = ar.user.institution
+                    else:
+                        collaborator_name = ar.pi_name or aid
+                    break
+            proposal_obj = {
+                "origin": "agent",
+                "proposal_id": str(td.id),
+                "title": title,
+                "collaborator": {
+                    "user_id": collaborator_user_id,
+                    "name": collaborator_name,
+                    "institution": collaborator_institution,
+                },
+            }
+        else:
+            mp = ev.matchmaker_proposal
+            title = mp.title if mp else "Unknown"
+            if mp:
+                if mp.pi_a_id == ev.user_id:
+                    collab_name = mp.name_b
+                    collab_uid = str(mp.pi_b_id) if mp.pi_b_id else None
+                    collab_inst = mp.pi_b.institution if mp.pi_b else None
+                else:
+                    collab_name = mp.name_a
+                    collab_uid = str(mp.pi_a_id) if mp.pi_a_id else None
+                    collab_inst = mp.pi_a.institution if mp.pi_a else None
+            else:
+                collab_name, collab_uid, collab_inst = "Unknown", None, None
+            proposal_obj = {
+                "origin": "matchmaker",
+                "proposal_id": str(mp.id) if mp else None,
+                "title": title,
+                "collaborator": {
+                    "user_id": collab_uid,
+                    "name": collab_name,
+                    "institution": collab_inst,
+                },
+            }
+
+        records.append(
+            {
+                "evaluation_id": str(ev.id),
+                "evaluated_at": _ts(ev.evaluated_at),
+                "updated_at": _ts(ev.updated_at),
+                "evaluator": {
+                    "user_id": str(ev.user.id) if ev.user else str(ev.user_id),
+                    "name": ev.user.name if ev.user else "Unknown",
+                    "orcid": ev.user.orcid if ev.user else None,
+                    "institution": ev.user.institution if ev.user else None,
+                },
+                "proposal": proposal_obj,
+                "scores": {
+                    "significance": ev.score_significance,
+                    "innovation": ev.score_innovation,
+                    "approach": ev.score_approach,
+                    "investigators": ev.score_investigators,
+                    "environment": ev.score_environment,
+                    "overall_impact": ev.score_overall_impact,
+                },
+                "comments": {
+                    "significance": ev.comments_significance,
+                    "innovation": ev.comments_innovation,
+                    "approach": ev.comments_approach,
+                    "investigators": ev.comments_investigators,
+                    "environment": ev.comments_environment,
+                    "overall": ev.comments_overall,
+                },
+            }
+        )
+
+    payload = {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "total_records": len(records),
+        "filters_applied": {
+            "origin": origin_filter or "all",
+            "impact_score_min": impact_min_val,
+            "impact_score_max": impact_max_val,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
+        "evaluations": records,
+    }
+
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": "attachment; filename=evaluations.json"},
+    )
