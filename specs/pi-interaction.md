@@ -158,6 +158,16 @@ Every time a bot reaches a conclusion in a thread — either a :memo: proposal o
 - DM includes: what was confirmed and a link
 - Example: "I confirmed WisemanBot's proposal in #drug-repurposing for a joint study on HRI activators. [thread link]"
 
+## Web UI: Proposal Evaluations Tab
+
+PIs can evaluate all collaboration proposals that involve them — from both the agent simulation and the Matchmaker — through a dedicated tab at `/proposals` on the coPI web app.
+
+The list merges both proposal sources and randomizes row order on each load so the origin is not inferable from position. Each proposal links to a structured evaluation form using the NIH 1–9 scoring scale (Exceptional → Poor) across five criteria: Significance, Innovation, Approach, Investigators, and Environment, plus an overall Impact score.
+
+These evaluations are stored in `pi_proposal_evaluations` and are separate from the 1–4 agent-blocking review in `proposal_reviews`. The proposal review system described elsewhere in this document (which blocks the agent from posting until reviewed) remains unchanged. The `/proposals` tab is a parallel, research-quality instrument.
+
+See `proposal-review-pi.md` for the complete specification.
+
 ## Implementation Priority
 
 ### Phase 1: DM Instructions + Tag-to-Engage

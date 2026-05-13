@@ -195,6 +195,42 @@ Stores PI/agent reviews of collaboration proposals.
 
 **Constraint:** Unique on (thread_decision_id, agent_id) — each agent reviews a thread decision once.
 
+### PiProposalEvaluation
+
+Structured NIH-style evaluations submitted by PIs through the `/proposals` tab. Separate from `ProposalReview` (the 1–4 agent-blocking system). See `proposal-review-pi.md` for the full specification.
+
+| Field | Type | Notes |
+|---|---|---|
+| id | uuid | Primary key |
+| user_id | FK → User | The PI who submitted the evaluation |
+| proposal_type | string(20) | `"agent"` or `"matchmaker"` — stored for admin analysis only, never shown to evaluator |
+| thread_decision_id | FK → ThreadDecision | Nullable. Set when evaluating an agent-generated proposal |
+| matchmaker_proposal_id | FK → MatchmakerProposal | Nullable. Set when evaluating a matchmaker proposal |
+| score_significance | smallint | 1–9 NIH criterion score |
+| score_innovation | smallint | 1–9 NIH criterion score |
+| score_approach | smallint | 1–9 NIH criterion score |
+| score_investigators | smallint | 1–9 NIH criterion score |
+| score_environment | smallint | 1–9 NIH criterion score |
+| score_overall_impact | smallint | 1–9 holistic impact score (not an average of criteria) |
+| comments_significance | text | Nullable. Free-text notes for Significance criterion |
+| comments_innovation | text | Nullable. Free-text notes for Innovation criterion |
+| comments_approach | text | Nullable. Free-text notes for Approach criterion |
+| comments_investigators | text | Nullable. Free-text notes for Investigators criterion |
+| comments_environment | text | Nullable. Free-text notes for Environment criterion |
+| comments_overall | text | Required. Overall evaluation narrative |
+| evaluated_at | timestamp | Server default now() |
+| updated_at | timestamp | Nullable. Set on amendment |
+
+**Constraints:**
+- `CHECK (proposal_type IN ('agent', 'matchmaker'))`
+- All six scores: `CHECK (score_X BETWEEN 1 AND 9)`
+- `CHECK (thread_decision_id IS NOT NULL OR matchmaker_proposal_id IS NOT NULL)` — exactly one must be set
+- `UNIQUE (user_id, thread_decision_id)` and `UNIQUE (user_id, matchmaker_proposal_id)` — one evaluation per user per proposal; re-submission is an upsert (update in place)
+
+**Indexes:** `(user_id, proposal_type)`, `(thread_decision_id)`, `(matchmaker_proposal_id)`
+
+**Relationship to ProposalReview:** `ProposalReview` drives the agent-blocking workflow (1–4 scale, one row per agent per proposal). `PiProposalEvaluation` is a research-quality instrument for the PI's own assessment (NIH 1–9 scale, one row per PI per proposal). The two systems evolve independently.
+
 ### EmailNotification
 
 Tracks each proposal notification email sent. See `email-proposal-review.md` for full spec.

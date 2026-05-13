@@ -79,9 +79,9 @@ Renders the tab with the generate form and proposals table.
 
 Renders the proposal detail view.
 
-### New Route: `DELETE /admin/matchmaker/{id}`
+### New Route: `POST /admin/matchmaker/{id}/delete`
 
-Deletes the proposal row. Redirects back to `/admin/matchmaker`.
+Deletes the proposal row. Redirects back to `/admin/matchmaker`. (HTML forms do not support `DELETE`; a POST sub-resource is used instead.)
 
 ---
 
@@ -204,7 +204,7 @@ The output format is enforced by wrapping the final proposal in `<proposal>` tag
 | `GET /admin/matchmaker` | Matchmaker tab with generate form and proposals table |
 | `POST /admin/matchmaker/generate` | Run LLM pipeline and store result |
 | `GET /admin/matchmaker/{id}` | Proposal detail view |
-| `DELETE /admin/matchmaker/{id}` | Delete a proposal |
+| `POST /admin/matchmaker/{id}/delete` | Delete a proposal |
 
 ### Nav link
 
@@ -235,3 +235,13 @@ Proposals from both sources can be exported in the same HTML/plain-text format.
 - **No simulation dependency.** Works without any running agent containers or Slack tokens.
 - **Same quality bar.** The Collaboration Quality Standards section from `agent-system.md` is embedded verbatim in the matchmaker prompt. No relaxed criteria.
 - **Prompt caching.** The system prompt (quality standards + both profiles) is structured to maximize Anthropic prompt cache hits when the same pair is regenerated.
+
+---
+
+## PI Evaluation of Matchmaker Proposals
+
+Matchmaker proposals surface to PIs through the unified **Proposal Evaluations** tab (`/proposals`) alongside agent-generated proposals. The origin is not revealed to the PI in that view. PIs submit NIH-style 1–9 evaluations via the form at `/proposals/{token}/evaluate`.
+
+Evaluations are stored in `pi_proposal_evaluations` with `proposal_type = "matchmaker"` and `matchmaker_proposal_id` set. Admins can see the origin breakdown (agent vs. matchmaker) at `/admin/evaluations`. See `proposal-review-pi.md` for the full specification.
+
+**Note on CLI-created proposals:** Matchmaker proposals created via the CLI (which set `pi_a_name`/`pi_b_name` but leave `pi_a_id`/`pi_b_id` null) cannot be linked to a `user_id` and will not appear in the PI evaluation list. Admins should backfill the FK columns to include these proposals, or create them through the web UI form where FK resolution happens automatically.

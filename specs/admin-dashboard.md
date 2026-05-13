@@ -167,7 +167,47 @@ Admin tool for generating collaboration proposals between two PIs on demand, wit
 - Full proposal rendered as markdown
 - Delete button
 
-### 8. LLM Call Logs (`/admin/llm-calls`)
+### 8. PI Proposal Evaluations (`/admin/evaluations`)
+
+Full visibility into all NIH-style PI evaluations submitted through the `/proposals` tab. This is the only place in the system where proposal origin (agent vs. matchmaker) is revealed — the PI-facing evaluation flow deliberately obscures it.
+
+See `proposal-review-pi.md` for the complete specification of the evaluation form and data model. This section covers the admin view only.
+
+**Summary cards:**
+- Total evaluations submitted
+- Evaluations this month
+- Proposals with ≥1 evaluation vs. total proposals in the system
+- Mean overall impact score (all time, shown as X.X / 9)
+
+**Evaluations table** — one row per `PiProposalEvaluation`:
+
+| Column | Notes |
+|---|---|
+| Evaluator | PI's name |
+| Proposal title | From the linked `ThreadDecision` or `MatchmakerProposal` |
+| Origin | `Agent` (blue) or `Matchmaker` (purple) badge |
+| Collaborator | The other PI named in the proposal |
+| Sig. / Inn. / App. / Inv. / Env. | Individual criterion scores 1–9 |
+| Impact | `score_overall_impact`, bold; color-coded green (1–3), yellow (4–6), red (7–9) |
+| Submitted | `evaluated_at` |
+| Updated | `updated_at` if the PI amended their evaluation |
+| Actions | "View" → expanded detail |
+
+**Row detail (inline expand or modal):**
+- All six scores with their associated comments
+- Full proposal body rendered as markdown
+- Evaluator metadata (name, institution, submission/amendment timestamps)
+
+**Filters:**
+- Evaluator (multi-select user dropdown)
+- Origin: All / Agent only / Matchmaker only
+- Overall Impact range (numeric min/max, 1–9)
+- Date range (evaluated_at from/to)
+
+**Export:**
+`GET /admin/evaluations/export.json` — downloads a JSON file of all rows matching the active filter state. Filters are passed as query params so the export always reflects what is on screen. See `proposal-review-pi.md §Admin Page` for the full JSON schema.
+
+### 10. LLM Call Logs (`/admin/llm-calls`)
 
 Debugging view for all LLM API calls.
 
@@ -180,7 +220,7 @@ Debugging view for all LLM API calls.
 - Latency (ms)
 - System prompt and response (expandable)
 
-### 9. Access Requests (`/admin/access-requests`)
+### 11. Access Requests (`/admin/access-requests`)
 
 Pre-release access gate management.
 
@@ -198,7 +238,7 @@ Pre-release access gate management.
 - Add ORCID + note form
 - Remove ORCID button
 
-### 10. Waitlist (`/admin/waitlist`)
+### 12. Waitlist (`/admin/waitlist`)
 
 Lead-capture signups from the public landing page.
 
@@ -210,7 +250,7 @@ Lead-capture signups from the public landing page.
 
 No outbound email is sent automatically — the admin uses the export to reach out manually, then marks rows contacted.
 
-### 11. User Impersonation
+### 13. User Impersonation
 
 Admins can assume the identity of any user to see the app as they see it.
 
@@ -246,6 +286,8 @@ Admins can assume the identity of any user to see the app as they see it.
 | `POST /admin/matchmaker/generate` | Run LLM pipeline and store result |
 | `GET /admin/matchmaker/{id}` | Proposal detail view |
 | `POST /admin/matchmaker/{id}/delete` | Delete a proposal |
+| `GET /admin/evaluations` | PI proposal evaluations overview |
+| `GET /admin/evaluations/export.json` | JSON export of evaluations (filter params as query string) |
 | `GET /admin/access-requests` | Pending access requests + allowlist management |
 | `POST /admin/access-requests/{user_id}/approve` | Approve a pending user |
 | `POST /admin/access-requests/{user_id}/deny` | Deny a pending user |
