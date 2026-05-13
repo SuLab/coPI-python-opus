@@ -61,7 +61,7 @@ class PiProposalEvaluation(Base):
     comments_approach: Mapped[str | None] = mapped_column(Text, nullable=True)
     comments_investigators: Mapped[str | None] = mapped_column(Text, nullable=True)
     comments_environment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    comments_overall: Mapped[str] = mapped_column(Text, nullable=False)
+    comments_overall: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     evaluated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

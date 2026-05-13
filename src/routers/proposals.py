@@ -361,7 +361,7 @@ async def evaluate_submit(
     token: str,
     request: Request,
     score_overall_impact: int = Form(...),
-    comments_overall: str = Form(...),
+    comments_overall: str = Form(""),
     # Criterion scores are optional — hidden from the PI form but preserved in DB
     score_significance: int | None = Form(None),
     score_innovation: int | None = Form(None),
@@ -402,9 +402,6 @@ async def evaluate_submit(
     for name, val in criterion_scores.items():
         if val is not None and not 1 <= val <= 9:
             raise HTTPException(status_code=400, detail=f"Score for {name} must be 1–9")
-
-    if not comments_overall.strip():
-        raise HTTPException(status_code=400, detail="Overall comments are required")
 
     # Upsert
     if proposal_type == "agent":
@@ -639,7 +636,7 @@ async def evaluate_group_submit(
     step: int,
     request: Request,
     score_overall_impact: int = Form(...),
-    comments_overall: str = Form(...),
+    comments_overall: str = Form(""),
     score_significance: int | None = Form(None),
     score_innovation: int | None = Form(None),
     score_approach: int | None = Form(None),
@@ -683,9 +680,6 @@ async def evaluate_group_submit(
     }.items():
         if val is not None and not 1 <= val <= 9:
             raise HTTPException(status_code=400, detail=f"Score for {name} must be 1–9")
-    if not comments_overall.strip():
-        raise HTTPException(status_code=400, detail="Overall comments are required")
-
     if proposal_type == "agent":
         eval_filter = (
             PiProposalEvaluation.user_id == current_user.id,
