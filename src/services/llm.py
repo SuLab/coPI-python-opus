@@ -166,7 +166,10 @@ async def generate_agent_response(
         )
         latency_ms = (time.monotonic() - t0) * 1000
         if not message.content:
-            logger.warning("Claude returned empty content (model=%s)", model)
+            logger.warning(
+                "Claude returned empty content (model=%s, stop_reason=%s, meta=%s)",
+                model, message.stop_reason, log_meta,
+            )
             return ""
         response_text = message.content[0].text
 
