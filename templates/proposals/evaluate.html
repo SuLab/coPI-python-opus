@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Evaluate Proposal — CoPI{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+    .proposal-md h1 { font-weight: 700; font-size: 1.1rem; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+    .proposal-md h2 { font-weight: 600; font-size: 1rem; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+    .proposal-md p  { margin-bottom: 0.5rem; }
+    .proposal-md ul, .proposal-md ol { padding-left: 1.5rem; margin-bottom: 0.5rem; }
+    .proposal-md li { margin-bottom: 0.25rem; }
+    .proposal-md strong { font-weight: 600; }
+    .score-radio { flex: 1; }
+    .score-radio input[type="radio"] { display: none; }
+    .score-radio label {
+        display: block; width: 100%; text-align: center;
+        padding: 0.45rem 0; cursor: pointer;
+        border: 1px solid #e5e7eb; border-radius: 0.375rem;
+        font-size: 1rem; font-weight: 700; color: #374151;
+        transition: all 0.1s;
+    }
+    .score-radio input[type="radio"]:checked + label {
+        background: #4f46e5; border-color: #4f46e5; color: #fff;
+    }
+    .score-radio label:hover { border-color: #6366f1; color: #4f46e5; }
+    .score-radio input[type="radio"]:checked + label:hover { background: #4338ca; color: #fff; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+
+    <!-- Back link + step indicator -->
+    <div class="flex items-center justify-between mb-4">
+        <a href="/proposals" class="text-sm text-gray-500 hover:text-indigo-600">
+            ← Back to proposals
+        </a>
+        {% if group_token is defined and total_steps is defined and total_steps > 1 %}
+        <span class="text-sm text-gray-400 font-medium">
+            {{ step + 1 }} of {{ total_steps }}
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- Proposal display -->
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-8">
+        <h1 class="text-xl font-bold text-gray-900 mb-1">{{ title }}</h1>
+        <p class="text-sm text-gray-500 mb-4">Proposed collaboration with <strong>{{ collaborator }}</strong></p>
+        <hr class="border-gray-100 mb-4">
+        <div class="proposal-md text-sm text-gray-700" id="proposal-body">{{ body_md }}</div>
+    </div>
+
+    <!-- Scoring guide (collapsible) -->
+    <details class="bg-amber-50 border border-amber-200 rounded-lg mb-8 text-sm">
+        <summary class="px-4 py-3 cursor-pointer font-medium text-amber-800 select-none">
+            Show scoring guide (NIH 1–9 scale) ▾
+        </summary>
+        <div class="px-4 pb-4 pt-1 text-gray-700">
+            <p class="mb-3">
+                Scores are whole numbers from <strong>1 (best)</strong> to <strong>9 (worst)</strong>.
+                Use the full range — scores of 1 and 9 are expected to be rare.
+            </p>
+            <table class="w-full text-xs border-collapse mb-3">
+                <thead>
+                    <tr class="bg-amber-100">
+                        <th class="border border-amber-200 px-2 py-1 text-left">Score</th>
+                        <th class="border border-amber-200 px-2 py-1 text-left">Descriptor</th>
+                        <th class="border border-amber-200 px-2 py-1 text-left">Strengths / Weaknesses</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td class="border border-amber-200 px-2 py-1 font-bold">1</td><td class="border border-amber-200 px-2 py-1 font-semibold">Exceptional</td><td class="border border-amber-200 px-2 py-1">Essentially no weaknesses</td></tr>
+                    <tr class="bg-amber-50"><td class="border border-amber-200 px-2 py-1 font-bold">2</td><td class="border border-amber-200 px-2 py-1 font-semibold">Outstanding</td><td class="border border-amber-200 px-2 py-1">Negligible weaknesses</td></tr>
+                    <tr><td class="border border-amber-200 px-2 py-1 font-bold">3</td><td class="border border-amber-200 px-2 py-1 font-semibold">Excellent</td><td class="border border-amber-200 px-2 py-1">Only minor weaknesses</td></tr>
+                    <tr class="bg-amber-50"><td class="border border-amber-200 px-2 py-1 font-bold">4</td><td class="border border-amber-200 px-2 py-1 font-semibold">Very Good</td><td class="border border-amber-200 px-2 py-1">Numerous minor weaknesses</td></tr>
+                    <tr><td class="border border-amber-200 px-2 py-1 font-bold">5</td><td class="border border-amber-200 px-2 py-1 font-semibold">Good</td><td class="border border-amber-200 px-2 py-1">At least one moderate weakness</td></tr>
+                    <tr class="bg-amber-50"><td class="border border-amber-200 px-2 py-1 font-bold">6</td><td class="border border-amber-200 px-2 py-1 font-semibold">Satisfactory</td><td class="border border-amber-200 px-2 py-1">Some moderate weaknesses</td></tr>
+                    <tr><td class="border border-amber-200 px-2 py-1 font-bold">7</td><td class="border border-amber-200 px-2 py-1 font-semibold">Fair</td><td class="border border-amber-200 px-2 py-1">At least one major weakness</td></tr>
+                    <tr class="bg-amber-50"><td class="border border-amber-200 px-2 py-1 font-bold">8</td><td class="border border-amber-200 px-2 py-1 font-semibold">Marginal</td><td class="border border-amber-200 px-2 py-1">A few major weaknesses</td></tr>
+                    <tr><td class="border border-amber-200 px-2 py-1 font-bold">9</td><td class="border border-amber-200 px-2 py-1 font-semibold">Poor</td><td class="border border-amber-200 px-2 py-1">Numerous major weaknesses</td></tr>
+                </tbody>
+            </table>
+            <p class="text-xs text-gray-500">
+                Scores 1–3 = high impact; 4–6 = moderate; 7–9 = low.
+            </p>
+        </div>
+    </details>
+
+    <!-- Evaluation form -->
+    {% if group_token is defined %}
+    <form method="POST" action="/proposals/group/{{ group_token }}/{{ step }}" class="space-y-8">
+    {% else %}
+    <form method="POST" action="/proposals/{{ token }}/evaluate" class="space-y-8">
+    {% endif %}
+
+        <!-- Overall Impact -->
+        {% set existing_impact = evaluation.score_overall_impact if evaluation else none %}
+        <div class="bg-indigo-50 rounded-xl border border-indigo-200 shadow-sm p-6">
+            <h2 class="text-base font-semibold text-gray-900 mb-1">Overall Impact Score</h2>
+            <p class="text-sm text-gray-600 mb-4">
+                Your holistic assessment of the likelihood that this collaboration would exert a
+                <strong>sustained, powerful influence</strong> on the research field(s) involved.
+                A proposal need not be strong in every dimension to earn a high impact score.
+            </p>
+
+            <div class="mb-4">
+                <div class="flex gap-1 w-full">
+                    {% for s in range(1, 10) %}
+                    <div class="score-radio">
+                        <input type="radio" name="score_overall_impact" id="score_overall_impact_{{ s }}" value="{{ s }}"
+                               {% if existing_impact == s %}checked{% endif %} required>
+                        <label for="score_overall_impact_{{ s }}">{{ s }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="flex justify-between text-xs text-gray-400 mt-1 px-0.5">
+                    <span>Exceptional</span>
+                    <span>Poor</span>
+                </div>
+            </div>
+
+            <!-- Required overall comment -->
+            <label class="block text-xs font-medium text-gray-700 mb-1">
+                Overall comments <span class="text-red-500">*</span>
+            </label>
+            <textarea name="comments_overall" rows="4" required
+                      placeholder="Summarize the key strengths and weaknesses driving your overall impact score…"
+                      class="w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">{{ evaluation.comments_overall if evaluation else '' }}</textarea>
+        </div>
+
+        <div class="flex items-center justify-between pt-2">
+            <a href="/proposals" class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
+            {% if group_token is defined and step + 1 < total_steps %}
+            <button type="submit"
+                    class="px-6 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                Next →
+            </button>
+            {% else %}
+            <button type="submit"
+                    class="px-6 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                {% if evaluation %}Update{% else %}Save{% endif %}
+            </button>
+            {% endif %}
+        </div>
+
+        {% if evaluation and evaluation.updated_at %}
+        <p class="text-xs text-gray-400 text-right">
+            Last updated <span data-utc="{{ evaluation.updated_at.isoformat() }}" data-utc-fmt="short">{{ evaluation.updated_at.strftime('%b %d %H:%M') }}</span>
+        </p>
+        {% elif evaluation %}
+        <p class="text-xs text-gray-400 text-right">
+            Submitted <span data-utc="{{ evaluation.evaluated_at.isoformat() }}" data-utc-fmt="short">{{ evaluation.evaluated_at.strftime('%b %d %H:%M') }}</span>
+        </p>
+        {% endif %}
+
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var body = document.getElementById('proposal-body');
+    if (body && typeof marked !== 'undefined') {
+        body.innerHTML = marked.parse(body.textContent || '');
+    }
+});
+</script>
+{% endblock %}
