@@ -267,6 +267,15 @@ class SimulationEngine:
             session_factory=self.session_factory,
         )
 
+        # Seed last_selected for all agents so the focus multiplier works on Turn 1.
+        # Without this, agents with last_selected=0.0 have a base weight equal to
+        # the current Unix timestamp (~1.7B), swamping any multiplier until every
+        # agent has had one turn.
+        now = time.time()
+        for a in self.agents.values():
+            if a.state.last_selected == 0.0:
+                a.state.last_selected = now
+
         # Main loop
         turn_count = 0
         consecutive_idle = 0
@@ -321,6 +330,12 @@ class SimulationEngine:
             # Track last agent to make an LLM call
             if did_work:
                 self._last_llm_caller = agent.agent_id
+            elif self._focus_agent and agent.agent_id != self._focus_agent:
+                # In focus mode, non-focus idle turns don't block the focus agent.
+                # Without this, a focus-agent LLM call (even an empty one) sets
+                # _last_llm_caller and no non-focus agent ever clears it, deadlocking
+                # the focus agent permanently.
+                self._last_llm_caller = None
 
             # Update last_selected
             agent.state.last_selected = time.time()
@@ -375,14 +390,31 @@ class SimulationEngine:
         if not candidates:
             return None
 
+        # In steady state, base weight = now - last_selected shrinks for
+        # frequently-picked agents, so P(focus) = sqrt(m)/(sqrt(m)+N-1).
+        # Solving for P = 0.25: m = ((N-1)/3)^2.
+        # The same multiplier is reused to temporarily boost non-focus agents
+        # that are in active conversation with the focus agent, which lets
+        # conversations flow naturally at the cost of the focus bot's 25% share.
+        n = len(candidates)
+        focus_multiplier = ((n - 1) / 3) ** 2 if self._focus_agent else 1.0
+
         weights = []
         for a in candidates:
             w = max(now - a.state.last_selected, 1.0)
             skips = a.state.consecutive_phase5_skips
             if skips >= 3:
                 w /= 2 ** (skips - 2)
-            if self._focus_agent and a.agent_id == self._focus_agent:
-                w *= 3  # focus agent gets ~3x more turns
+            if self._focus_agent:
+                if a.agent_id == self._focus_agent:
+                    w *= focus_multiplier
+                elif any(
+                    t.other_agent_id == self._focus_agent
+                    for t in a.state.active_threads.values()
+                ):
+                    # Boost to match focus agent so the conversation alternates
+                    # rapidly; 25% target for focus bot is not enforced here.
+                    w *= focus_multiplier
             weights.append(w)
         return random.choices(candidates, weights=weights, k=1)[0]
 
@@ -430,7 +462,22 @@ class SimulationEngine:
 
         has_new_work = has_interesting or has_phase4_work or phase2_ran or has_pi
 
-        if has_new_work or spontaneous_ready:
+        # In focus mode, non-focus agents have no one useful to post to spontaneously —
+        # their only valid target is the focus agent, and organic discovery handles that
+        # via has_new_work. Skip spontaneous Phase 5 to avoid wasted Opus calls.
+        focus_mode_blocks_spontaneous = (
+            self._focus_agent
+            and agent.agent_id != self._focus_agent
+            and not has_new_work
+            and spontaneous_ready
+        )
+
+        if focus_mode_blocks_spontaneous:
+            logger.debug(
+                "[%s] Phase 5: Skipped spontaneous call (focus mode, no focus-agent state)",
+                agent.agent_id,
+            )
+        elif has_new_work or spontaneous_ready:
             await self._phase5_new_post(agent, phase4_thread_ids)
         else:
             logger.debug(
