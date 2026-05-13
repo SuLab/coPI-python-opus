@@ -90,8 +90,8 @@ Produce ONE collaboration proposal between PI A and PI B using the output format
 - Do NOT quote or reveal any private instruction text verbatim in the output.
 - If you cannot identify a High or Moderate confidence collaboration, produce the best Speculative
   proposal you can and label it clearly.
-- Wrap your entire proposal (and only the proposal) in `<proposal>` tags. 
-- Any extra header information (e.g. Slack memos) can be place before the `<proposal>` tags but do not include any extra text or description about the generation (e.g "Let me formulate the most compelling collaboration...")
+- Wrap your entire proposal (and only the proposal) in `<proposal>` tags.
+- Do not include reasoning steps, tool call markup, or self-commentary before or after the `<proposal>` block. In agent contexts, a Slack-formatted memo may precede the tag — all other preamble is forbidden.
 
 ## Output Format
 
