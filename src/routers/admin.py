@@ -92,15 +92,14 @@ async def admin_users(
         pub_count = pub_counts.get(str(user.id), 0)
 
         # Profile status
+        active_jobs = [j for j in user.jobs if j.status in ("pending", "processing")]
         if not profile:
-            profile_status = "no_profile"
+            profile_status = "generating" if active_jobs else "no_profile"
         elif profile.pending_profile:
             profile_status = "pending_update"
         elif profile.research_summary:
             profile_status = "complete"
         else:
-            # Check if there's a running job
-            active_jobs = [j for j in user.jobs if j.status in ("pending", "processing")]
             profile_status = "generating" if active_jobs else "no_profile"
 
         # Apply filters
