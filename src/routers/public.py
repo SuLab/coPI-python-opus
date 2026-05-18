@@ -10,8 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.dependencies import get_current_user
+from src.dependencies import get_optional_current_user
 from src.models import AgentRegistry, ResearcherProfile, User, WaitlistSignup
+from src.services.profile_export import ORCID_TO_AGENT_ID
+
+_AGENT_ID_TO_ORCID: dict[str, str] = {v: k for k, v in ORCID_TO_AGENT_ID.items()}
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,25 +92,34 @@ async def view_researcher_profile(
     agent_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
-    """Read-only public profile view accessible to any logged-in user."""
+    """Read-only public profile view — accessible to anyone, no login required."""
+    pi_user: User | None = None
+
+    # Primary: look up via active AgentRegistry entry
     agent_result = await db.execute(
         select(AgentRegistry).where(AgentRegistry.agent_id == agent_id)
     )
     agent = agent_result.scalar_one_or_none()
-    if not agent or agent.status != "active":
+    if agent and agent.status == "active":
+        pi_result = await db.execute(select(User).where(User.id == agent.user_id))
+        pi_user = pi_result.scalar_one_or_none()
+
+    # Fallback: look up via ORCID mapping for researchers without an active agent yet
+    if pi_user is None:
+        orcid = _AGENT_ID_TO_ORCID.get(agent_id)
+        if orcid:
+            pi_result = await db.execute(select(User).where(User.orcid == orcid))
+            pi_user = pi_result.scalar_one_or_none()
+
+    if not pi_user:
         raise HTTPException(status_code=404, detail="Researcher not found")
 
     profile_result = await db.execute(
-        select(ResearcherProfile).where(ResearcherProfile.user_id == agent.user_id)
+        select(ResearcherProfile).where(ResearcherProfile.user_id == pi_user.id)
     )
     profile = profile_result.scalar_one_or_none()
-
-    pi_result = await db.execute(select(User).where(User.id == agent.user_id))
-    pi_user = pi_result.scalar_one_or_none()
-    if not pi_user:
-        raise HTTPException(status_code=404, detail="Researcher not found")
 
     return templates.TemplateResponse(
         request,

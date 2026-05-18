@@ -16,6 +16,25 @@ from src.models import User
 logger = logging.getLogger(__name__)
 
 
+async def get_optional_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Like get_current_user but returns None instead of redirecting for unauthenticated requests."""
+    user_id_str = request.session.get("user_id")
+    if not user_id_str:
+        return None
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        request.session.clear()
+        return None
+    result = await db.execute(
+        select(User).options(selectinload(User.profile)).where(User.id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
