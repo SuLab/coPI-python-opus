@@ -14,6 +14,14 @@
     .proposal-md a { color: #4f46e5; text-decoration: underline; }
     textarea { border: 1px solid #d1d5db; border-radius: 0.375rem; }
     textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,0.2); }
+    .disc-bubble p { margin-bottom: 0.4rem; }
+    .disc-bubble p:last-child { margin-bottom: 0; }
+    .disc-bubble strong { font-weight: 600; }
+    .disc-bubble a { text-decoration: underline; }
+    .disc-bubble ul, .disc-bubble ol { padding-left: 1.25rem; margin-bottom: 0.4rem; }
+    .disc-bubble li { margin-bottom: 0.15rem; }
+    .disc-bubble-mine a { color: rgba(255,255,255,0.85); }
+    .disc-bubble-mine strong { color: white; }
 </style>
 {% endblock %}
 
@@ -151,15 +159,17 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                             </svg>
                         </button>
-                        <div id="disc-{{ idx }}" class="hidden mt-3 max-h-[32rem] overflow-y-auto rounded-lg border border-gray-100 bg-gray-50 divide-y divide-gray-100">
+                        <div id="disc-{{ idx }}" class="hidden mt-3 max-h-[32rem] overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 p-4 space-y-4">
                             {% for msg in entry.discussion %}
-                            <div class="px-4 py-3">
-                                <div class="flex items-baseline gap-2 mb-1">
-                                    <span class="text-sm font-semibold text-gray-800">{{ msg.agent_id | capitalize }}Bot</span>
-                                    <span class="text-xs text-gray-400"
-                                          data-utc="{{ msg.ts }}" data-utc-fmt="disc">{{ msg.ts }}</span>
+                            {% set is_mine = msg.agent_id == agent.agent_id %}
+                            <div class="flex flex-col {{ 'items-end' if is_mine else 'items-start' }}">
+                                <div class="flex items-center gap-1.5 mb-1 {{ 'flex-row-reverse' if is_mine else '' }}">
+                                    <span class="text-xs font-medium text-gray-600">{{ msg.agent_id | capitalize }}Bot</span>
+                                    <span class="text-xs text-gray-400" data-utc="{{ msg.ts }}" data-utc-fmt="disc">{{ msg.ts }}</span>
                                 </div>
-                                <div class="pl-3 text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{{ msg.text }}</div>
+                                <div class="max-w-[85%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed disc-bubble
+                                            {{ 'bg-indigo-600 text-white rounded-tr-sm disc-bubble-mine' if is_mine else 'bg-white text-gray-700 rounded-tl-sm border border-gray-200 shadow-sm' }}"
+                                     data-markdown="{{ msg.text | e }}"></div>
                             </div>
                             {% endfor %}
                         </div>

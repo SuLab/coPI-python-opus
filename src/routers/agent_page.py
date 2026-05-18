@@ -227,7 +227,11 @@ async def agent_dashboard(
                 .order_by(LlmCallLog.created_at.asc())
             )
             raw_msgs = [
-                {"agent_id": r[0], "text": r[1].strip(), "ts": r[2].isoformat()}
+                {
+                    "agent_id": r[0],
+                    "text": re.sub(r"</?slack_message>", "", r[1]).strip(),
+                    "ts": r[2].isoformat(),
+                }
                 for r in disc_result
                 if r[1] and r[1].strip()
             ]
