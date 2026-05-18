@@ -1,6 +1,7 @@
 """My Agent page router."""
 
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from src.models import (
     AgentDelegate,
     AgentMessage,
     AgentRegistry,
+    LlmCallLog,
     ProposalReview,
     ResearcherProfile,
     ThreadDecision,
@@ -33,6 +35,18 @@ SLACK_INVITE_URL = (
     "https://join.slack.com/t/labbot-workspace/shared_invite/"
     "zt-3sxfrrisw-t4hRz4aMfZZPxThxUaTGKA"
 )
+
+
+def _extract_proposal_title(text: str | None) -> str:
+    if not text:
+        return "Collaboration Proposal"
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            return re.sub(r"^#+\s*", "", line).strip() or "Collaboration Proposal"
+        if line:
+            return line[:120]
+    return "Collaboration Proposal"
 
 
 def _template_context(request: Request, user: User, **kwargs) -> dict:
@@ -185,7 +199,8 @@ async def agent_dashboard(
     reviewed = []
     for p in proposals:
         other = p.agent_b if p.agent_a == aid else p.agent_a
-        entry = {"proposal": p, "other_agent": other}
+        title = _extract_proposal_title(p.summary_text)
+        entry = {"proposal": p, "other_agent": other, "title": title}
         if p.id in reviewed_ids:
             rev_result = await db.execute(
                 select(ProposalReview).where(
@@ -196,6 +211,37 @@ async def agent_dashboard(
             entry["review"] = rev_result.scalar_one_or_none()
             reviewed.append(entry)
         else:
+            # Fetch discussion: one entry per actual Slack message in this thread.
+            # LlmCallLog logs every API call; tool-use chains produce multiple entries
+            # per turn with empty/partial response_text. Fix: filter blanks, then
+            # collapse consecutive same-agent entries (keep the last/fullest one).
+            disc_result = await db.execute(
+                select(LlmCallLog.agent_id, LlmCallLog.response_text, LlmCallLog.created_at)
+                .where(
+                    LlmCallLog.channel == p.channel,
+                    LlmCallLog.phase == "thread_reply",
+                    LlmCallLog.agent_id.in_([p.agent_a, p.agent_b]),
+                    LlmCallLog.created_at <= p.decided_at,
+                    func.length(LlmCallLog.response_text) > 10,
+                )
+                .order_by(LlmCallLog.created_at.asc())
+            )
+            raw_msgs = [
+                {
+                    "agent_id": r[0],
+                    "text": re.sub(r"</?slack_message>", "", r[1]).strip(),
+                    "ts": r[2].isoformat(),
+                }
+                for r in disc_result
+                if r[1] and r[1].strip()
+            ]
+            deduped: list[dict] = []
+            for msg in raw_msgs:
+                if deduped and deduped[-1]["agent_id"] == msg["agent_id"]:
+                    deduped[-1] = msg
+                else:
+                    deduped.append(msg)
+            entry["discussion"] = deduped
             unreviewed.append(entry)
 
     # Private profile path

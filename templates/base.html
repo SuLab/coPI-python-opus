@@ -143,6 +143,9 @@ document.addEventListener('DOMContentLoaded', function() {
         } else if (fmt === 'short') {
             el.textContent = d.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' +
                              d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+        } else if (fmt === 'disc') {
+            el.textContent = d.toLocaleDateString([], {weekday: 'long'}) + ' ' +
+                             d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
         } else {
             el.textContent = d.toLocaleDateString([], {month: 'short', day: 'numeric', year: 'numeric'}) + ' ' +
                              d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
