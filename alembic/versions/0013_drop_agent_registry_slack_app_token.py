@@ -19,11 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_column("agent_registry", "slack_app_token")
+    op.drop_column("agents", "slack_app_token")
 
 
 def downgrade() -> None:
     op.add_column(
-        "agent_registry",
+        "agents",
         sa.Column("slack_app_token", sa.Text, nullable=True),
     )
