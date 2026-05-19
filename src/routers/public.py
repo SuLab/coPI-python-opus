@@ -23,10 +23,14 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Institution mapping for the Cabo collaboration graph. Mirrors the comment
 # groupings in src/agent/simulation.py PILOT_LABS.
 _SCRIPPS = {
+    # Active Cabo cohort
     "su", "wiseman", "grotjahn", "ward", "briney", "forli", "lairson",
     "badran", "kern", "lasker", "lippi", "maillie", "millar", "miller",
     "mravic", "paulson", "pwu", "seiple", "williamson", "wilson",
     "young",  # Calibr-Skaggs is part of Scripps
+    # Scripps investigators not at the Cabo meeting (suspended/pending)
+    "cravatt", "petrascheck", "lotz", "racki", "ken", "deniz", "saez", "wu",
+    "macrae", "williams",
 }
 _UCSF = {
     "sali", "larabell", "zaro", "roe", "santi", "wells", "echeverria",
@@ -41,7 +45,7 @@ _OTHER_INST = {
 # Cohort cutover for the Cabo retreat graph: matches commit 0ef4741
 # ("Reshape PILOT_LABS for Cabo retreat"). All proposals to date share a
 # single simulation_run_id, so date is the only way to isolate the new cohort.
-CABO_COHORT_START = datetime(2026, 5, 1, tzinfo=timezone.utc)
+CABO_COHORT_START = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
 
 def _institution_for(agent_id: str) -> str:
@@ -176,22 +180,39 @@ async def access_pending_email(
     )
 
 
-@router.get("/cabo-graph", response_class=HTMLResponse)
-async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
-    """PI collaboration network for the Cabo retreat: nodes = active PIs, edges = joint proposals."""
-    nodes_result = await db.execute(
-        text(
-            "SELECT agent_id, pi_name, bot_name FROM agents "
-            "WHERE status='active' ORDER BY pi_name"
+async def _build_graph_payload(db: AsyncSession, *, scripps_only: bool):
+    """Shared data builder for /cabo-graph and /scripps-graph.
+
+    For the Cabo view, restrict to active agents (the cohort). For the
+    Scripps view, include all Scripps agents regardless of status so we
+    pick up investigators who weren't at the meeting.
+    """
+    if scripps_only:
+        nodes_result = await db.execute(
+            text("SELECT agent_id, pi_name, bot_name FROM agents ORDER BY pi_name")
         )
-    )
-    active_rows = nodes_result.fetchall()
+        active_rows = [r for r in nodes_result.fetchall() if r.agent_id in _SCRIPPS]
+    else:
+        nodes_result = await db.execute(
+            text(
+                "SELECT agent_id, pi_name, bot_name FROM agents "
+                "WHERE status='active' ORDER BY pi_name"
+            )
+        )
+        active_rows = nodes_result.fetchall()
     active_ids = {row.agent_id for row in active_rows}
 
     edges_result = await db.execute(
         text(
             """
-            WITH pairs AS (
+            WITH cohort_posts AS (
+                SELECT message_ts
+                FROM agent_messages
+                WHERE phase = 'new_post'
+                  AND created_at >= :cohort_start
+                  AND message_ts IS NOT NULL
+            ),
+            pairs AS (
                 SELECT
                     LEAST(agent_a, agent_b)    AS a,
                     GREATEST(agent_a, agent_b) AS b,
@@ -201,6 +222,7 @@ async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
                 FROM thread_decisions
                 WHERE outcome = 'proposal'
                   AND decided_at >= :cohort_start
+                  AND thread_id IN (SELECT message_ts FROM cohort_posts)
             )
             SELECT
                 a, b,
@@ -245,8 +267,45 @@ async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
             "proposals": total_proposals[row.agent_id],
         }
         for row in active_rows
+        if degree[row.agent_id] > 0
     ]
+    return _largest_component(nodes, links)
 
+
+def _largest_component(nodes, links):
+    """Return nodes and links restricted to the largest connected component."""
+    parent = {n["id"]: n["id"] for n in nodes}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for link in links:
+        union(link["source"], link["target"])
+
+    groups: dict[str, list[str]] = {}
+    for n in nodes:
+        groups.setdefault(find(n["id"]), []).append(n["id"])
+    if not groups:
+        return nodes, links
+
+    keep = set(max(groups.values(), key=len))
+    filtered_nodes = [n for n in nodes if n["id"] in keep]
+    filtered_links = [l for l in links if l["source"] in keep and l["target"] in keep]
+    return filtered_nodes, filtered_links
+
+
+@router.get("/cabo-graph", response_class=HTMLResponse)
+async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
+    """PI collaboration network for the Cabo retreat: all active PIs."""
+    nodes, links = await _build_graph_payload(db, scripps_only=False)
     return templates.TemplateResponse(
         request,
         "cabo_graph.html",
@@ -256,5 +315,28 @@ async def cabo_graph(request: Request, db: AsyncSession = Depends(get_db)):
             "node_count": len(nodes),
             "edge_count": len(links),
             "proposal_count": sum(link["weight"] for link in links),
+            "page_title": "Cabo collaboration network",
+            "pi_label": "PIs",
+            "show_full_legend": True,
+        },
+    )
+
+
+@router.get("/scripps-graph", response_class=HTMLResponse)
+async def scripps_graph(request: Request, db: AsyncSession = Depends(get_db)):
+    """Scripps-only slice of the collaboration network."""
+    nodes, links = await _build_graph_payload(db, scripps_only=True)
+    return templates.TemplateResponse(
+        request,
+        "cabo_graph.html",
+        {
+            "request": request,
+            "graph_json": json.dumps({"nodes": nodes, "links": links}),
+            "node_count": len(nodes),
+            "edge_count": len(links),
+            "proposal_count": sum(link["weight"] for link in links),
+            "page_title": "Scripps Research collaboration network",
+            "pi_label": "Scripps PIs",
+            "show_full_legend": False,
         },
     )

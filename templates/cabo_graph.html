@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>CoPI · CABO collaboration network</title>
+<title>CoPI · {{ page_title }}</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
@@ -138,8 +138,8 @@
 
 <div class="header">
   <div style="margin-left: 96px;">
-    <div class="title">CABO collaboration network</div>
-    <div class="sub">{{ node_count }} PIs · {{ edge_count }} collaborating pairs · {{ proposal_count }} joint proposals since May 1, 2026</div>
+    <div class="title">{{ page_title }}</div>
+    <div class="sub">{{ node_count }} {{ pi_label }} · {{ edge_count }} collaborating pairs · {{ proposal_count }} joint proposals since March 1, 2026</div>
     <div class="sub" style="font-size: 12px; color: #64748b; margin-top: 4px;">
       hover for info, sign in to view proposal details
     </div>
@@ -155,11 +155,13 @@
 
 <svg id="viz"></svg>
 
+{% if show_full_legend %}
 <div class="legend">
   <div class="row"><span class="swatch" style="background:#f59e0b"></span> Scripps Research</div>
   <div class="row"><span class="swatch" style="background:#a855f7"></span> UCSF</div>
   <div class="row"><span class="swatch" style="background:#64748b"></span> Other</div>
 </div>
+{% endif %}
 
 <div class="tooltip" id="tooltip"></div>
 
@@ -172,6 +174,22 @@
 
   const width = window.innerWidth;
   const height = window.innerHeight;
+
+  // Resolve last-name collisions by prefixing the first initial (e.g. "P. Wu" / "C. Wu").
+  const surnameCounts = {};
+  data.nodes.forEach((n) => {
+    const s = lastName(n.pi);
+    surnameCounts[s] = (surnameCounts[s] || 0) + 1;
+  });
+  data.nodes.forEach((n) => {
+    const s = lastName(n.pi);
+    if (surnameCounts[s] > 1) {
+      const first = (n.pi || "").trim().split(/\s+/)[0] || "";
+      n.label = first ? `${first[0]}. ${s}` : s;
+    } else {
+      n.label = s;
+    }
+  });
 
   const COLORS = {
     Scripps: "#f59e0b",
@@ -194,7 +212,7 @@
 
   const fontSize = (d) => 16.5 + Math.sqrt(d.proposals || 0) * 1.85;
   // Approximate pill dimensions before live text measurement; refined post-render.
-  const approxPillW = (d) => lastName(d.pi).length * fontSize(d) * 0.6 + 22;
+  const approxPillW = (d) => d.label.length * fontSize(d) * 0.6 + 22;
   const approxPillH = (d) => fontSize(d) + 14;
   const collideRadius = (d) => Math.max(d._w || approxPillW(d), d._h || approxPillH(d)) / 2 + 6;
 
@@ -274,7 +292,7 @@
 
   node.append("text")
     .style("font-size", (d) => fontSize(d) + "px")
-    .text((d) => lastName(d.pi));
+    .text((d) => d.label);
 
   // Measure rendered text and size pill rects to fit. Re-run collide once sized.
   node.each(function(d) {
