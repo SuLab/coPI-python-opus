@@ -57,6 +57,7 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase hidden lg:table-cell">Version</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase hidden lg:table-cell">Claimed</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase hidden md:table-cell">Joined</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase hidden md:table-cell">Last Login</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -115,10 +116,17 @@
                 <td class="px-4 py-3 text-xs text-gray-500 hidden md:table-cell">
                     {{ item.user.created_at.strftime('%b %d, %Y') }}
                 </td>
+                <td class="px-4 py-3 text-xs text-gray-500 hidden md:table-cell">
+                    {% if item.user.last_login_at %}
+                        {{ item.user.last_login_at.strftime('%b %d, %Y') }}
+                    {% else %}
+                        <span class="text-gray-400">—</span>
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">No users found</td>
+                <td colspan="10" class="px-4 py-8 text-center text-gray-400 text-sm">No users found</td>
             </tr>
             {% endfor %}
         </tbody>

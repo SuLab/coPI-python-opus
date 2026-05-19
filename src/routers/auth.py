@@ -168,6 +168,9 @@ async def auth_callback(
             user.claimed_at = datetime.now(timezone.utc)
         logger.info("Existing user %s logged in (access=%s)", user.id, user.access_status)
 
+    if user.access_status == "allowed":
+        user.last_login_at = datetime.now(timezone.utc)
+
     await db.commit()
 
     # Access gate: users who aren't allowed do not get a session
