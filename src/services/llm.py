@@ -165,7 +165,20 @@ async def generate_agent_response(
         )
         latency_ms = (time.monotonic() - t0) * 1000
         if not message.content:
-            logger.warning("Claude returned empty content (model=%s)", model)
+            agent_id = (log_meta or {}).get("agent_id", "?")
+            phase = (log_meta or {}).get("phase", "?")
+            sys_chars = len(system_prompt)
+            user_chars = sum(len(m.get("content", "")) for m in messages)
+            user_tail = (messages[-1].get("content", "")[-400:] if messages else "")
+            logger.warning(
+                "Claude returned empty content (model=%s agent=%s phase=%s "
+                "stop=%r sys_chars=%d user_chars=%d in_tok=%d out_tok=%d) "
+                "user_tail=%r",
+                model, agent_id, phase, message.stop_reason,
+                sys_chars, user_chars,
+                message.usage.input_tokens, message.usage.output_tokens,
+                user_tail,
+            )
             return ""
         response_text = message.content[0].text
 
