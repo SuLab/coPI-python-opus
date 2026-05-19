@@ -14,9 +14,15 @@ GrantBot is independent of the simulation engine. It:
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+# Skip FOAs that close in fewer than this many days — labs need lead time to
+# prepare a credible response. Steady-state daily runs surface new FOAs long
+# before this cutoff; the filter only drops late-posted agency calls and
+# FOAs the selection LLM has been repeatedly passing over.
+MIN_LEAD_DAYS = 21
 
 import typer
 from sqlalchemy import delete, select
@@ -121,6 +127,33 @@ def _build_search_queries(profiles: dict[str, dict]) -> list[str]:
         len(queries), len(priority_queries), len(keyword_queries),
     )
     return queries
+
+
+def _parse_close_date(raw: str) -> datetime | None:
+    """Parse a Grants.gov close_date string. Returns None if unparseable/empty.
+
+    A None result means "no known deadline" (rolling/standing FOAs) and the
+    caller should keep the opportunity.
+    """
+    if not raw:
+        return None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _has_sufficient_lead_time(close_date_raw: str, now: datetime, min_days: int) -> bool:
+    """Return True if the FOA closes far enough out (or has no parseable deadline).
+
+    Unparseable/empty close dates pass through — those are rolling submissions.
+    """
+    cd = _parse_close_date(close_date_raw)
+    if cd is None:
+        return True
+    return cd >= now + timedelta(days=min_days)
 
 
 async def _load_posted_numbers(session: AsyncSession) -> set[str]:
@@ -393,6 +426,25 @@ async def _run_grantbot_with_session(
             all_opps[num] = opp
 
     logger.info("Found %d new opportunities (after filtering posted)", len(all_opps))
+
+    # 2b. Drop FOAs with insufficient lead time — labs can't prepare a credible
+    #     response for a deadline a few days out. See MIN_LEAD_DAYS.
+    now = datetime.now(timezone.utc)
+    short_lead: list[tuple[str, str]] = []
+    kept: dict[str, dict] = {}
+    for num, opp in all_opps.items():
+        if _has_sufficient_lead_time(opp.get("close_date", ""), now, MIN_LEAD_DAYS):
+            kept[num] = opp
+        else:
+            short_lead.append((num, opp.get("close_date", "")))
+    if short_lead:
+        sample = ", ".join(f"{n} (closes {d})" for n, d in short_lead[:10])
+        logger.info(
+            "Skipping %d FOAs with <%d days lead time: %s%s",
+            len(short_lead), MIN_LEAD_DAYS, sample,
+            "" if len(short_lead) <= 10 else f" … and {len(short_lead) - 10} more",
+        )
+    all_opps = kept
 
     if not all_opps:
         logger.info("No new opportunities to process")
