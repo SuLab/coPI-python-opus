@@ -38,16 +38,7 @@ templates = Jinja2Templates(directory="templates")
 
 AUDIO_DIR = Path("data/podcast_audio")
 
-MISTRAL_VOICES = [
-    ("alex", "Alex — US English, male, calm"),
-    ("deedee", "DeeDee — US English, female, upbeat"),
-    ("jessica", "Jessica — US English, female, expressive"),
-    ("luna", "Luna — US English, female, soft"),
-    ("rio", "Rio — US English, male, energetic"),
-    ("stella", "Stella — US English, female, professional"),
-    ("theo", "Theo — US English, male, measured"),
-    ("tyler", "Tyler — US English, male, conversational"),
-]
+from src.routers.agent_page import MISTRAL_VOICES  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +253,18 @@ async def get_podcast_settings_user(
     )
     prefs = prefs_result.scalar_one_or_none()
 
-    settings = get_settings()
-    base_url = settings.podcast_base_url or settings.base_url
-    feed_url = f"{base_url}/podcast/users/{current_user.id}/feed.xml"
+    recent_episodes_result = await db.execute(
+        select(PodcastEpisode)
+        .where(
+            PodcastEpisode.user_id == current_user.id,
+            PodcastEpisode.audio_file_path.is_not(None),
+        )
+        .order_by(PodcastEpisode.episode_date.desc())
+        .limit(5)
+    )
+    recent_episodes = recent_episodes_result.scalars().all()
+
+    feed_path = f"/podcast/users/{current_user.id}/feed.xml"
 
     return templates.TemplateResponse(
         request,
@@ -276,7 +276,9 @@ async def get_podcast_settings_user(
             "prefs": prefs,
             "voices": MISTRAL_VOICES,
             "saved": saved,
-            "feed_url": feed_url,
+            "feed_path": feed_path,
+            "podcast_enabled": prefs.podcast_enabled if prefs else False,
+            "recent_episodes": recent_episodes,
         },
     )
 
@@ -284,6 +286,7 @@ async def get_podcast_settings_user(
 @router.post("/settings")
 async def save_podcast_settings_user(
     request: Request,
+    podcast_enabled: str = Form(""),
     voice_id: str = Form(""),
     extra_keywords_raw: str = Form(""),
     preferred_journals_raw: str = Form(""),
@@ -317,27 +320,53 @@ async def save_podcast_settings_user(
     )
     prefs = prefs_result.scalar_one_or_none()
 
+    was_enabled = prefs.podcast_enabled if prefs is not None else False
+
     if prefs is None:
         prefs = PodcastPreferences(user_id=current_user.id, agent_id=None)
         db.add(prefs)
 
+    newly_enabled = (not was_enabled) and (podcast_enabled == "1")
+
+    prefs.podcast_enabled = podcast_enabled == "1"
     prefs.voice_id = voice_id.strip() or None
     prefs.extra_keywords = _parse_keywords(extra_keywords_raw)
     prefs.preferred_journals = _parse_journals(preferred_journals_raw)
     prefs.deprioritized_journals = _parse_journals(deprioritized_journals_raw)
     await db.commit()
 
+    if newly_enabled:
+        logger.info("Podcast enabled for user %s — triggering immediate generation", current_user.id)
+        asyncio.create_task(_run_user_pipeline_background(current_user.id))
+
     logger.info("Podcast preferences saved for user %s", current_user.id)
     return RedirectResponse(url="/podcast/settings?saved=1", status_code=302)
 
 
 async def _run_user_pipeline_background(user_id) -> None:
-    """Run the user podcast pipeline in a background task with its own DB session."""
+    """Run the user podcast pipeline in a background task with its own DB session.
+
+    Skips silently if today's episode already exists (idempotent — safe to call
+    concurrently with the scheduler).
+    """
+    from datetime import date, timezone
+
+    from src.models.podcast import PodcastEpisode
     from src.podcast.pipeline import run_podcast_for_user
 
     session_factory = get_session_factory()
     try:
         async with session_factory() as db:
+            today = date.today()
+            existing = await db.execute(
+                select(PodcastEpisode).where(
+                    PodcastEpisode.user_id == user_id,
+                    PodcastEpisode.episode_date == today,
+                )
+            )
+            if existing.scalar_one_or_none() is not None:
+                logger.info("User %s already has today's episode — skipping background run", user_id)
+                return
             ok = await run_podcast_for_user(user_id=user_id, db_session=db)
             await db.commit()
             logger.info("On-demand podcast pipeline for user %s: %s", user_id, "produced" if ok else "no episode")
@@ -353,6 +382,8 @@ async def podcast_generate_for_user(
     """Trigger on-demand podcast generation for the current user (returns immediately)."""
     from sqlalchemy.orm import selectinload
 
+    from src.models.podcast_preferences import PodcastPreferences
+
     user_result = await db.execute(
         select(User)
         .options(selectinload(User.profile))
@@ -362,6 +393,13 @@ async def podcast_generate_for_user(
 
     if not _podcast_eligible(user):
         raise HTTPException(status_code=403, detail="Complete your profile before generating a podcast.")
+
+    prefs_result = await db.execute(
+        select(PodcastPreferences).where(PodcastPreferences.user_id == current_user.id)
+    )
+    prefs = prefs_result.scalar_one_or_none()
+    if not prefs or not prefs.podcast_enabled:
+        raise HTTPException(status_code=403, detail="Enable the podcast in your settings before generating an episode.")
 
     asyncio.create_task(_run_user_pipeline_background(current_user.id))
 

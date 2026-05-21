@@ -114,6 +114,9 @@ async def run():
     if settings.podcast_tts_backend == "local":
         from src.podcast.local_tts import generate_audio
         logger.info("TTS backend: local vLLM-Omni (%s:%s)", settings.local_tts_host, settings.local_tts_port)
+    elif settings.podcast_tts_backend == "openai":
+        from src.podcast.openai_tts import generate_audio
+        logger.info("TTS backend: OpenAI TTS")
     else:
         from src.podcast.mistral_tts import generate_audio
         logger.info("TTS backend: Mistral AI (%s)", settings.mistral_tts_model)

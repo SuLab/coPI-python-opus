@@ -416,6 +416,58 @@ See the **Podcast Preferences UI** section below for the full design.
 
 ---
 
+## User Opt-In / Opt-Out
+
+### Default State
+
+Podcast generation is **disabled by default** for all plain ORCID users. An eligible user (onboarded with a completed profile) must explicitly opt in from the `/podcast/settings` page before any episode is generated for them. This prevents unsolicited audio generation for users who signed up but have not engaged with the feature.
+
+The agent path is unaffected — pilot-lab agents are always enabled as long as their `AgentRegistry.status == "active"`. Only the user path is gated by the opt-in flag.
+
+### Storage
+
+The opt-in flag is stored as `podcast_enabled: bool` on the `PodcastPreferences` row, defaulting to `False`. Because `PodcastPreferences` is created on first save, the scheduler treats both "no row exists" and "`podcast_enabled = False`" as disabled.
+
+```python
+class PodcastPreferences(Base):
+    ...
+    podcast_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+```
+
+Migration: `0022_add_podcast_enabled.py` adds `podcast_enabled BOOLEAN NOT NULL DEFAULT false` to `podcast_preferences`.
+
+### Enforcement Points
+
+| Location | Check |
+|---|---|
+| Daily scheduler (`src/podcast/main.py`) | Skip user unless `PodcastPreferences.podcast_enabled = True` |
+| On-demand trigger (`POST /podcast/user/generate`) | Return `403` unless user has `podcast_enabled = True` |
+
+The `_podcast_eligible()` helper in `src/routers/podcast.py` remains unchanged — it checks profile completeness only. The `podcast_enabled` flag is checked separately in the scheduler and on-demand endpoint.
+
+### Settings UI
+
+The `/podcast/settings` page shows the enable/disable toggle **at the top of the form**, before any other preferences. The feed URL card and all preference fields are always visible so users can inspect their URL and configure preferences before enabling. The toggle takes immediate effect on save.
+
+- **Disabled state**: toggle is off; the feed URL card notes that generation is paused.
+- **Enabled state**: toggle is on; generation runs in the daily scheduler at 9am UTC.
+
+### Alembic Migration
+
+```python
+# 0022_add_podcast_enabled.py
+def upgrade() -> None:
+    op.add_column(
+        "podcast_preferences",
+        sa.Column("podcast_enabled", sa.Boolean(), nullable=False, server_default="false"),
+    )
+
+def downgrade() -> None:
+    op.drop_column("podcast_preferences", "podcast_enabled")
+```
+
+---
+
 ## Podcast Preferences UI
 
 ### Route and Access Control
@@ -603,6 +655,7 @@ templates/
   - `POST /podcast/user/generate` — on-demand episode trigger (auth-gated)
 - **State**: `data/podcast_state.json` gains a `"users"` section keyed by user_id UUID strings.
 - **Eligibility gate**: `user.onboarding_complete == True` and `profile.research_summary IS NOT NULL`. Users who have not yet built their profile are silently skipped.
+- **Opt-in gate**: generation only runs for users with `PodcastPreferences.podcast_enabled = True`. Users who have not explicitly enabled the podcast via `/podcast/settings` are skipped even if they are otherwise eligible. See **User Opt-In / Opt-Out** section.
 
 ---
 

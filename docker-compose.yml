@@ -72,7 +72,7 @@ services:
 
   podcast:
     build: .
-    command: python -m src.podcast.main scheduler --run-hour 9
+    command: python -m src.podcast.main scheduler
     env_file: .env
     environment:
       # Override LOCAL_TTS_HOST so the container can reach a vLLM-Omni server
@@ -89,6 +89,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    profiles:
+      - podcast
 
 volumes:
   pgdata:

@@ -124,7 +124,7 @@ services:
     build:
       context: .
     restart: unless-stopped
-    command: ["python", "-m", "src.podcast.main", "scheduler", "--run-hour", "9"]
+    command: ["python", "-m", "src.podcast.main", "scheduler"]
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copi}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-copi}

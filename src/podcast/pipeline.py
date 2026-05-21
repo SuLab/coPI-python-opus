@@ -14,6 +14,33 @@ PROFILES_DIR = Path("profiles/public")
 AUDIO_DIR = Path("data/podcast_audio")
 
 
+async def _flush_podcast_llm_logs(buffer: list[dict], db_session) -> None:
+    """Write buffered LLM call log entries to the DB (simulation_run_id left NULL)."""
+    if not buffer:
+        return
+    from src.models.agent_activity import LlmCallLog
+
+    try:
+        for entry in buffer:
+            record = LlmCallLog(
+                simulation_run_id=None,
+                agent_id=entry.get("agent_id", "unknown"),
+                phase=entry.get("phase", "unknown"),
+                channel=None,
+                model=entry.get("model", ""),
+                system_prompt=entry.get("system_prompt", ""),
+                messages_json=entry.get("messages", []),
+                response_text=entry.get("response_text", ""),
+                input_tokens=entry.get("input_tokens", 0),
+                output_tokens=entry.get("output_tokens", 0),
+                latency_ms=entry.get("latency_ms", 0.0),
+                created_at=entry.get("completed_at"),
+            )
+            db_session.add(record)
+    except Exception as exc:
+        logger.warning("Failed to write podcast LLM call logs: %s", exc)
+
+
 def _load_public_profile(agent_id: str) -> str:
     """Load the public profile markdown for an agent."""
     path = PROFILES_DIR / f"{agent_id}.md"
@@ -381,20 +408,29 @@ async def run_pipeline_for_agent(
     combined_preferences = (preferences_text or "") + journal_context
 
     # Step 3: LLM article selection
-    selected, justification = await _select_article(profile_text, candidates, agent_id, combined_preferences)
-    if selected is None:
-        logger.info("Agent %s: no article selected", agent_id)
-        return False
+    from src.services.llm import set_call_log_callback
 
-    pmid = selected.get("pmid", "")
-    paper_url = selected.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-    logger.info("Agent %s: selected PMID %s", agent_id, pmid)
+    _llm_log_buffer: list[dict] = []
+    set_call_log_callback(_llm_log_buffer.append)
+    try:
+        selected, justification = await _select_article(profile_text, candidates, agent_id, combined_preferences)
+        if selected is None:
+            logger.info("Agent %s: no article selected", agent_id)
+            return False
 
-    # Step 4: Try to fetch full text
-    full_text = await _try_fetch_full_text(pmid)
+        pmid = selected.get("pmid", "")
+        paper_url = selected.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        logger.info("Agent %s: selected PMID %s", agent_id, pmid)
 
-    # Step 5: Generate text summary
-    summary = await _generate_summary(profile_text, selected, full_text, agent_id, combined_preferences)
+        # Step 4: Try to fetch full text
+        full_text = await _try_fetch_full_text(pmid)
+
+        # Step 5: Generate text summary
+        summary = await _generate_summary(profile_text, selected, full_text, agent_id, combined_preferences)
+    finally:
+        set_call_log_callback(None)
+        await _flush_podcast_llm_logs(_llm_log_buffer, db_session)
+
     if not summary:
         logger.error("Agent %s: summary generation failed", agent_id)
         return False
@@ -412,10 +448,11 @@ async def run_pipeline_for_agent(
         from src.podcast.mistral_tts import generate_audio
         logger.info("Agent %s: using Mistral AI TTS backend", agent_id)
     audio_ok = await generate_audio(summary, agent_id, audio_path, voice_override=voice_override)
-    audio_file_path = str(audio_path) if audio_ok else None
-    audio_duration = None
-    if audio_ok:
-        audio_duration = get_audio_duration_seconds(audio_path)
+    if not audio_ok:
+        logger.error("Agent %s: TTS failed — skipping episode", agent_id)
+        return False
+    audio_file_path = str(audio_path)
+    audio_duration = get_audio_duration_seconds(audio_path)
 
     # Step 7: Build RSS URL for DM
     base_url = settings.podcast_base_url or settings.base_url
@@ -456,8 +493,11 @@ async def run_pipeline_for_agent(
     db_session.add(episode)
     await db_session.flush()
 
-    # Step 10: Update state
-    record_delivery(agent_id, pmid)
+    # Step 10: Update state (non-fatal — DB record already flushed)
+    try:
+        record_delivery(agent_id, pmid)
+    except Exception as exc:
+        logger.warning("Agent %s: state.py record_delivery failed (non-fatal): %s", agent_id, exc)
 
     logger.info(
         "Agent %s: episode complete (audio=%s, slack=%s)", agent_id, audio_ok, slack_ok
@@ -563,18 +603,27 @@ async def run_podcast_for_user(
     combined_preferences = journal_context
 
     # Article selection
-    selected, justification = await _select_article(profile_text, candidates, user_id_str, combined_preferences)
-    if selected is None:
-        logger.info("User %s: no article selected", user_id_str)
-        return False
+    from src.services.llm import set_call_log_callback
 
-    pmid = selected.get("pmid", "")
-    paper_url = selected.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-    logger.info("User %s: selected PMID %s", user_id_str, pmid)
+    _llm_log_buffer: list[dict] = []
+    set_call_log_callback(_llm_log_buffer.append)
+    try:
+        selected, justification = await _select_article(profile_text, candidates, user_id_str, combined_preferences)
+        if selected is None:
+            logger.info("User %s: no article selected", user_id_str)
+            return False
 
-    full_text = await _try_fetch_full_text(pmid)
+        pmid = selected.get("pmid", "")
+        paper_url = selected.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        logger.info("User %s: selected PMID %s", user_id_str, pmid)
 
-    summary = await _generate_summary(profile_text, selected, full_text, user_id_str, combined_preferences)
+        full_text = await _try_fetch_full_text(pmid)
+
+        summary = await _generate_summary(profile_text, selected, full_text, user_id_str, combined_preferences)
+    finally:
+        set_call_log_callback(None)
+        await _flush_podcast_llm_logs(_llm_log_buffer, db_session)
+
     if not summary:
         logger.error("User %s: summary generation failed", user_id_str)
         return False
@@ -589,8 +638,11 @@ async def run_podcast_for_user(
     else:
         from src.podcast.mistral_tts import generate_audio
     audio_ok = await generate_audio(summary, user_id_str, audio_path, voice_override=voice_override)
-    audio_file_path = str(audio_path) if audio_ok else None
-    audio_duration = get_audio_duration_seconds(audio_path) if audio_ok else None
+    if not audio_ok:
+        logger.error("User %s: TTS failed — skipping episode", user_id_str)
+        return False
+    audio_file_path = str(audio_path)
+    audio_duration = get_audio_duration_seconds(audio_path)
 
     # Extract metadata
     authors_list = selected.get("authors") or []
@@ -619,7 +671,10 @@ async def run_podcast_for_user(
     db_session.add(episode)
     await db_session.flush()
 
-    record_delivery_for_user(user_id_str, pmid)
+    try:
+        record_delivery_for_user(user_id_str, pmid)
+    except Exception as exc:
+        logger.warning("User %s: state.py record_delivery failed (non-fatal): %s", user_id_str, exc)
 
     logger.info(
         "User %s: episode complete (audio=%s)", user_id_str, audio_ok

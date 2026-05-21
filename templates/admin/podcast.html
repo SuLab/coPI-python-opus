@@ -8,7 +8,7 @@
 </div>
 
 <!-- Summary cards -->
-<div class="grid grid-cols-3 gap-4 mb-8">
+<div class="grid grid-cols-3 gap-4 mb-4">
     <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
         <div class="text-3xl font-bold text-indigo-600">{{ total }}</div>
         <div class="text-sm text-gray-500 mt-1">Total Episodes</div>
@@ -20,6 +20,22 @@
     <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
         <div class="text-3xl font-bold text-blue-600">{{ slack_delivered }}</div>
         <div class="text-sm text-gray-500 mt-1">Slack Delivered</div>
+    </div>
+</div>
+
+<!-- LLM usage stats -->
+<div class="grid grid-cols-3 gap-4 mb-8">
+    <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
+        <div class="text-2xl font-bold text-purple-600">{{ llm_call_count }}</div>
+        <div class="text-sm text-gray-500 mt-1">LLM Calls (podcast)</div>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
+        <div class="text-2xl font-bold text-purple-600">{{ "{:,}".format(llm_input_tokens) }}</div>
+        <div class="text-sm text-gray-500 mt-1">Input Tokens</div>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
+        <div class="text-2xl font-bold text-purple-600">{{ "{:,}".format(llm_output_tokens) }}</div>
+        <div class="text-sm text-gray-500 mt-1">Output Tokens</div>
     </div>
 </div>
 
@@ -123,7 +139,13 @@
             <tr class="hover:bg-gray-50">
                 <td class="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{{ ep.episode_date }}</td>
                 <td class="px-4 py-3 text-sm">
+                    {% if ep.agent_id %}
                     <span class="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">{{ ep.agent_id }}</span>
+                    {% elif ep.user_id %}
+                    <span class="font-mono text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded" title="User {{ ep.user_id }}">user:{{ ep.user_id | string | truncate(8, end='…') }}</span>
+                    {% else %}
+                    <span class="text-gray-400 text-xs">—</span>
+                    {% endif %}
                 </td>
                 <td class="px-4 py-3 text-sm max-w-xs">
                     <div class="font-medium text-gray-800 truncate" title="{{ ep.paper_title }}">{{ ep.paper_title }}</div>

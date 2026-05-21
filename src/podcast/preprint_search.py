@@ -155,13 +155,14 @@ async def _fetch_arxiv(
     if not terms:
         return []
 
-    # Build arXiv search: keyword terms in abstract + category filter
+    # Build arXiv search: keyword terms in abstract + category filter + date range
     term_clause = " OR ".join(f'abs:"{t}"' for t in terms[:6])
-    search_query = f"({term_clause}) AND ({ARXIV_CATEGORIES})"
-
     start_date, _ = _date_range(days)
-    # arXiv date filter via submittedDate
     arxiv_date = start_date.replace("-", "") + "000000"
+    search_query = (
+        f"({term_clause}) AND ({ARXIV_CATEGORIES})"
+        f" AND submittedDate:[{arxiv_date} TO *]"
+    )
 
     params = {
         "search_query": search_query,

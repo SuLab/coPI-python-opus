@@ -1,15 +1,31 @@
 """LabBot Podcast — daily personalized research briefings for each PI.
 
 Usage:
-    python -m src.podcast.main            # run once immediately
+    python -m src.podcast.main            # run once for all pending recipients
     python -m src.podcast.main scheduler  # long-running daily scheduler
 
-The scheduler runs at 9am UTC daily (1 hour after GrantBot).
+Scheduler behaviour
+-------------------
+Recipients (agents + opted-in users) are processed one at a time.
+
+Window mode (default 00:00–03:00 UTC):
+    Each recipient is processed in turn; the scheduler sleeps between each so
+    that the full cohort is spread evenly across the window.  Agents are
+    processed first, then users.
+
+Catch-up mode (any time outside the window):
+    If the container starts and any recipient is missing today's episode the
+    scheduler processes all of them immediately with a short pause between
+    each.  This covers restarts after a crash or a missed window.
+
+Per-recipient completion is checked via the DB (PodcastEpisode.episode_date ==
+today) rather than a single global flag, so a partial run or a crash is
+automatically resumed on the next boot.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import typer
 
@@ -23,149 +39,286 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(invoke_without_command=True)
 
-RUN_HOUR_UTC = 9  # run at 9am UTC
+# Minimum seconds between recipients during the stagger window.
+_MIN_STAGGER_SECS = 60
+# Seconds between recipients during catch-up (outside window).
+_CATCHUP_PAUSE_SECS = 60
+# Maximum sleep between "all done" checks (so newly opted-in users aren't
+# delayed more than this many seconds into the next day).
+_MAX_IDLE_SLEEP_SECS = 4 * 3600
 
 
-async def run_podcast(dry_run: bool = False) -> list[str]:
-    """Run the podcast pipeline for all active agents AND eligible plain users.
+# ---------------------------------------------------------------------------
+# Per-recipient helpers
+# ---------------------------------------------------------------------------
 
-    Returns list of identifiers (agent_ids + "user:<uuid>") that produced episodes.
+async def _get_pending_recipients(today: date) -> tuple[list, list]:
+    """Return (pending_agents, pending_users) who have no episode for today.
+
+    Agents are instances of AgentRegistry; users are instances of User (with
+    .profile pre-loaded).  Both lists are sorted deterministically so the order
+    is stable across restarts within the same day.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
     from src.database import get_session_factory
     from src.models.agent_registry import AgentRegistry
-    from src.models.profile import ResearcherProfile
+    from src.models.podcast import PodcastEpisode
+    from src.models.podcast_preferences import PodcastPreferences
     from src.models.user import User
-    from src.podcast.pipeline import run_pipeline_for_agent, run_podcast_for_user
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        # Agents already done today
+        done_agents_res = await db.execute(
+            select(PodcastEpisode.agent_id).where(
+                PodcastEpisode.episode_date == today,
+                PodcastEpisode.agent_id.is_not(None),
+            )
+        )
+        done_agent_ids = {r[0] for r in done_agents_res}
+
+        # Users already done today
+        done_users_res = await db.execute(
+            select(PodcastEpisode.user_id).where(
+                PodcastEpisode.episode_date == today,
+                PodcastEpisode.user_id.is_not(None),
+            )
+        )
+        done_user_ids = {r[0] for r in done_users_res}
+
+        # Active agents where podcast is explicitly opted in (INNER JOIN —
+        # agents with no prefs row or podcast_enabled=False are excluded).
+        agents_res = await db.execute(
+            select(AgentRegistry)
+            .join(
+                PodcastPreferences,
+                PodcastPreferences.agent_id == AgentRegistry.agent_id,
+            )
+            .where(
+                AgentRegistry.status == "active",
+                PodcastPreferences.podcast_enabled.is_(True),
+            )
+        )
+        all_agents = agents_res.scalars().all()
+        pending_agents = sorted(
+            [a for a in all_agents if a.agent_id not in done_agent_ids],
+            key=lambda a: a.agent_id,
+        )
+
+        # user_ids covered by the agent path — skip in the user loop
+        agent_user_ids = {a.user_id for a in all_agents if a.user_id is not None}
+
+        # Opted-in users not yet done
+        users_res = await db.execute(
+            select(User)
+            .join(PodcastPreferences, PodcastPreferences.user_id == User.id)
+            .options(selectinload(User.profile))
+            .where(
+                User.onboarding_complete.is_(True),
+                PodcastPreferences.podcast_enabled.is_(True),
+            )
+        )
+        all_opted_in = users_res.scalars().all()
+        pending_users = sorted(
+            [
+                u for u in all_opted_in
+                if u.id not in agent_user_ids
+                and u.id not in done_user_ids
+                and u.profile is not None
+                and u.profile.research_summary
+            ],
+            key=lambda u: str(u.id),
+        )
+
+    return pending_agents, pending_users
+
+
+async def _process_agent(agent) -> bool:
+    """Run the full pipeline for one agent in its own DB session."""
+    from src.database import get_session_factory
+    from src.podcast.pipeline import run_pipeline_for_agent
 
     settings = get_settings()
     slack_tokens = settings.get_slack_tokens()
+    tokens = slack_tokens.get(agent.agent_id, {})
+    bot_token = agent.slack_bot_token or tokens.get("bot", "")
 
     session_factory = get_session_factory()
+    try:
+        async with session_factory() as db:
+            ok = await run_pipeline_for_agent(
+                agent_id=agent.agent_id,
+                bot_name=agent.bot_name,
+                pi_name=agent.pi_name,
+                bot_token=bot_token,
+                slack_user_id=agent.slack_user_id,
+                db_session=db,
+            )
+            await db.commit()
+        return ok
+    except Exception as exc:
+        logger.error("Pipeline failed for agent %s: %s", agent.agent_id, exc, exc_info=True)
+        return False
+
+
+async def _process_user(user) -> bool:
+    """Run the full pipeline for one plain user in its own DB session."""
+    from src.database import get_session_factory
+    from src.podcast.pipeline import run_podcast_for_user
+
+    session_factory = get_session_factory()
+    try:
+        async with session_factory() as db:
+            ok = await run_podcast_for_user(user_id=user.id, db_session=db)
+            await db.commit()
+        return ok
+    except Exception as exc:
+        logger.error("Pipeline failed for user %s: %s", user.id, exc, exc_info=True)
+        return False
+
+
+def _seconds_until_window(now: datetime, window_start_hour: int) -> int:
+    """Seconds until the next opening of the daily generation window."""
+    target = now.replace(hour=window_start_hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(60, int((target - now).total_seconds()))
+
+
+# ---------------------------------------------------------------------------
+# One-shot batch runner (used by the 'main' command and legacy callers)
+# ---------------------------------------------------------------------------
+
+async def run_podcast(dry_run: bool = False) -> list[str]:
+    """Run the podcast pipeline for all pending recipients today.
+
+    Returns list of identifiers (agent_ids + "user:<uuid>") that produced
+    episodes.  Already-completed recipients (episode exists for today) are
+    skipped automatically.
+    """
+    today = datetime.now(timezone.utc).date()
+    pending_agents, pending_users = await _get_pending_recipients(today)
     produced: list[str] = []
 
-    async with session_factory() as db:
-        # ----------------------------------------------------------------
-        # Agent path — pilot-lab agents with active AgentRegistry entries
-        # ----------------------------------------------------------------
-        result = await db.execute(
-            select(AgentRegistry).where(AgentRegistry.status == "active")
-        )
-        agents = result.scalars().all()
+    for agent in pending_agents:
+        if dry_run:
+            logger.info("DRY RUN — would run pipeline for agent: %s", agent.agent_id)
+            continue
+        ok = await _process_agent(agent)
+        if ok:
+            produced.append(agent.agent_id)
 
-        if not agents:
-            logger.warning("No active agents found in registry — trying all known agents")
-            for agent_id, tokens in slack_tokens.items():
-                bot_token = tokens.get("bot", "")
-                if not bot_token or bot_token.startswith("xoxb-placeholder"):
-                    continue
-                if dry_run:
-                    logger.info("DRY RUN — would run pipeline for agent: %s", agent_id)
-                    continue
-                try:
-                    ok = await run_pipeline_for_agent(
-                        agent_id=agent_id,
-                        bot_name=f"{agent_id.capitalize()}Bot",
-                        pi_name=agent_id.capitalize(),
-                        bot_token=bot_token,
-                        slack_user_id=None,
-                        db_session=db,
-                    )
-                    if ok:
-                        produced.append(agent_id)
-                except Exception as exc:
-                    logger.error("Pipeline failed for agent %s: %s", agent_id, exc, exc_info=True)
-        else:
-            for agent in agents:
-                agent_id = agent.agent_id
-                tokens = slack_tokens.get(agent_id, {})
-                bot_token = agent.slack_bot_token or tokens.get("bot", "")
-
-                if dry_run:
-                    logger.info(
-                        "DRY RUN — would run pipeline for agent: %s (%s)", agent_id, agent.pi_name
-                    )
-                    continue
-
-                try:
-                    ok = await run_pipeline_for_agent(
-                        agent_id=agent_id,
-                        bot_name=agent.bot_name,
-                        pi_name=agent.pi_name,
-                        bot_token=bot_token,
-                        slack_user_id=agent.slack_user_id,
-                        db_session=db,
-                    )
-                    if ok:
-                        produced.append(agent_id)
-                except Exception as exc:
-                    logger.error(
-                        "Pipeline failed for agent %s: %s", agent_id, exc, exc_info=True
-                    )
-
-        await db.commit()
-
-        # ----------------------------------------------------------------
-        # User path — plain ORCID users without an active agent
-        # ----------------------------------------------------------------
-        # Collect user_ids of users who already have an active agent so we
-        # can skip them (they're already covered by the agent path above).
-        agent_user_ids_result = await db.execute(
-            select(AgentRegistry.user_id).where(
-                AgentRegistry.status == "active",
-                AgentRegistry.user_id.is_not(None),
-            )
-        )
-        agent_user_ids = {row[0] for row in agent_user_ids_result}
-
-        # Fetch onboarded users who have a completed ResearcherProfile
-        users_result = await db.execute(
-            select(User)
-            .options(selectinload(User.profile))
-            .where(User.onboarding_complete.is_(True))
-        )
-        all_users = users_result.scalars().all()
-
-        eligible_users = [
-            u for u in all_users
-            if u.id not in agent_user_ids
-            and u.profile is not None
-            and u.profile.research_summary
-        ]
-
-        if eligible_users:
-            logger.info("Running user podcast pipeline for %d eligible users", len(eligible_users))
-        else:
-            logger.info("No eligible plain users for podcast pipeline")
-
-        for user in eligible_users:
-            if dry_run:
-                logger.info("DRY RUN — would run pipeline for user: %s (%s)", user.id, user.name)
-                continue
-            try:
-                ok = await run_podcast_for_user(user_id=user.id, db_session=db)
-                if ok:
-                    produced.append(f"user:{user.id}")
-            except Exception as exc:
-                logger.error(
-                    "Pipeline failed for user %s: %s", user.id, exc, exc_info=True
-                )
-
-        await db.commit()
+    for user in pending_users:
+        if dry_run:
+            logger.info("DRY RUN — would run pipeline for user: %s (%s)", user.id, user.name)
+            continue
+        ok = await _process_user(user)
+        if ok:
+            produced.append(f"user:{user.id}")
 
     logger.info("Podcast run complete: %d episodes produced", len(produced))
     return produced
 
 
+# ---------------------------------------------------------------------------
+# Long-running scheduler
+# ---------------------------------------------------------------------------
+
+async def _scheduler_loop(window_start: int, window_end: int) -> None:
+    """Single long-lived event loop for the daily scheduler.
+
+    Keeping a single asyncio.run() call avoids the "Future attached to a
+    different loop" errors that arise if asyncio.run() is called in a tight
+    while-loop (each call creates a new event loop and the SQLAlchemy asyncpg
+    engine is bound to the one that created it).
+    """
+    logger.info(
+        "Podcast scheduler started (window=%02d:00–%02d:00 UTC)", window_start, window_end
+    )
+
+    while True:
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        pending_agents, pending_users = await _get_pending_recipients(today)
+        total_pending = len(pending_agents) + len(pending_users)
+
+        if total_pending == 0:
+            sleep_secs = _seconds_until_window(now, window_start)
+            logger.info(
+                "All episodes generated for %s. Sleeping %ds until %02d:00 UTC.",
+                today, min(sleep_secs, _MAX_IDLE_SLEEP_SECS), window_start,
+            )
+            await asyncio.sleep(min(sleep_secs, _MAX_IDLE_SLEEP_SECS))
+            continue
+
+        in_window = window_start <= now.hour < window_end
+
+        if in_window:
+            # Spread remaining recipients evenly across the remaining window.
+            window_end_dt = now.replace(hour=window_end, minute=0, second=0, microsecond=0)
+            remaining_secs = max(0, int((window_end_dt - now).total_seconds()))
+            stagger_delay = max(_MIN_STAGGER_SECS, remaining_secs // total_pending)
+
+            # Process one recipient — agents first, then users.
+            if pending_agents:
+                agent = pending_agents[0]
+                logger.info(
+                    "[window] Agent %s (%d remaining, next in %ds)",
+                    agent.agent_id, total_pending, stagger_delay,
+                )
+                await _process_agent(agent)
+            else:
+                user = pending_users[0]
+                logger.info(
+                    "[window] User %s (%d remaining, next in %ds)",
+                    user.id, total_pending, stagger_delay,
+                )
+                await _process_user(user)
+
+            await asyncio.sleep(stagger_delay)
+
+        else:
+            # Outside window — catch-up: process all with a short pause between.
+            logger.info(
+                "[catchup] %d recipients missing today's episode — running immediately",
+                total_pending,
+            )
+            all_pending = [("agent", a) for a in pending_agents] + [("user", u) for u in pending_users]
+            for i, (kind, recipient) in enumerate(all_pending):
+                if kind == "agent":
+                    logger.info(
+                        "[catchup] Agent %s (%d/%d)", recipient.agent_id, i + 1, total_pending
+                    )
+                    await _process_agent(recipient)
+                else:
+                    logger.info(
+                        "[catchup] User %s (%d/%d)", recipient.id, i + 1, total_pending
+                    )
+                    await _process_user(recipient)
+                if i < total_pending - 1:
+                    await asyncio.sleep(_CATCHUP_PAUSE_SECS)
+
+            now = datetime.now(timezone.utc)
+            sleep_secs = _seconds_until_window(now, window_start)
+            logger.info(
+                "[catchup] Done. Sleeping %ds until %02d:00 UTC.",
+                min(sleep_secs, _MAX_IDLE_SLEEP_SECS), window_start,
+            )
+            await asyncio.sleep(min(sleep_secs, _MAX_IDLE_SLEEP_SECS))
+
+
+# ---------------------------------------------------------------------------
+# CLI commands
+# ---------------------------------------------------------------------------
+
 @app.command()
 def main(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without posting or generating audio"),
 ):
-    """Run the podcast pipeline once for all active agents."""
-    from src.podcast.state import mark_run_complete
-
+    """Run the podcast pipeline once for all pending recipients today."""
     results = asyncio.run(run_podcast(dry_run=dry_run))
     if results:
         typer.echo(f"\nProduced {len(results)} episodes:")
@@ -173,51 +326,26 @@ def main(
             typer.echo(f"  {aid}")
     else:
         typer.echo("No episodes produced.")
-    if not dry_run:
-        mark_run_complete()
 
 
 @app.command("scheduler")
 def scheduler(
-    run_hour: int = typer.Option(RUN_HOUR_UTC, "--run-hour", help="UTC hour to run daily (0-23)"),
-    check_interval: int = typer.Option(900, "--check-interval", help="Seconds between schedule checks"),
+    window_start: int = typer.Option(0, "--window-start", help="UTC hour to begin staggered generation (default midnight)"),
+    window_end: int = typer.Option(3, "--window-end", help="UTC hour to finish staggered generation (default 3am)"),
 ):
-    """Long-running scheduler: runs podcast pipeline once per calendar day.
+    """Long-running daily scheduler.
 
-    If the container starts after the scheduled hour, runs immediately to catch up.
+    During the window (default 00:00–03:00 UTC) recipients are processed one at
+    a time with an adaptive delay so that the full cohort is spread evenly across
+    the window.
+
+    If the container starts outside the window and any recipient is missing
+    today's episode, all pending recipients are processed immediately (catch-up).
     """
-    asyncio.run(_scheduler_loop(run_hour, check_interval))
-
-
-async def _scheduler_loop(run_hour: int, check_interval: int) -> None:
-    """Single long-lived event loop for the daily scheduler.
-
-    Using a single asyncio.run() call keeps the SQLAlchemy asyncpg connection
-    pool bound to one event loop for the lifetime of the process.  Calling
-    asyncio.run() in a while-loop would create a fresh event loop each
-    iteration, leaving the cached engine attached to the closed previous loop
-    and causing "Future attached to a different loop" errors on the second run.
-    """
-    from src.podcast.state import mark_run_complete, should_run_today
-
-    logger.info(
-        "Podcast scheduler started (run_hour=%d UTC, check every %ds)", run_hour, check_interval
-    )
-
-    while True:
-        now = datetime.now(timezone.utc)
-        if should_run_today() and now.hour >= run_hour:
-            logger.info("Running daily podcast pipeline...")
-            try:
-                results = await run_podcast()
-                mark_run_complete()
-                logger.info("Daily run complete: %d episodes", len(results))
-            except Exception as exc:
-                logger.error("Daily run failed: %s", exc, exc_info=True)
-        else:
-            logger.debug("No run needed (last run: %s, hour: %d)", "?", now.hour)
-
-        await asyncio.sleep(check_interval)
+    if not (0 <= window_start < window_end <= 24):
+        typer.echo(f"Invalid window: {window_start}–{window_end}. window_start must be < window_end.", err=True)
+        raise typer.Exit(1)
+    asyncio.run(_scheduler_loop(window_start, window_end))
 
 
 if __name__ == "__main__":

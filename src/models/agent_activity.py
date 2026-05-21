@@ -112,13 +112,14 @@ class LlmCallLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    simulation_run_id: Mapped[uuid.UUID] = mapped_column(
+    simulation_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("simulation_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     agent_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    phase: Mapped[str] = mapped_column(String(30), nullable=False)  # decide, respond, kickstart, memory
+    # phase values: decide, respond, kickstart, memory, podcast_select, podcast_summarize
+    phase: Mapped[str] = mapped_column(String(30), nullable=False)
     channel: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
@@ -132,7 +133,7 @@ class LlmCallLog(Base):
     )
 
     # Relationships
-    simulation_run: Mapped["SimulationRun"] = relationship(
+    simulation_run: Mapped["SimulationRun | None"] = relationship(
         "SimulationRun", back_populates="llm_call_logs"
     )
 

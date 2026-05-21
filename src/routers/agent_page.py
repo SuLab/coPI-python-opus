@@ -855,6 +855,7 @@ async def get_podcast_settings(
 async def save_podcast_settings(
     agent_id: str,
     request: Request,
+    podcast_enabled: str = Form(""),
     voice_id: str = Form(""),
     extra_keywords_raw: str = Form(""),
     preferred_journals_raw: str = Form(""),
@@ -893,6 +894,7 @@ async def save_podcast_settings(
         prefs = PodcastPreferences(agent_id=agent_id)
         db.add(prefs)
 
+    prefs.podcast_enabled = podcast_enabled == "1"
     prefs.voice_id = clean_voice
     prefs.extra_keywords = extra_keywords
     prefs.preferred_journals = preferred_journals

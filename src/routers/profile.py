@@ -39,6 +39,7 @@ def _parse_list(val: str) -> list[str]:
 async def profile_view(
     request: Request,
     onboarding_complete: bool = False,
+    podcast_incomplete: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -69,6 +70,7 @@ async def profile_view(
             publications=publications,
             pending_profile=profile.pending_profile if profile else None,
             just_completed_onboarding=onboarding_complete,
+            podcast_incomplete=podcast_incomplete,
         ),
     )
 

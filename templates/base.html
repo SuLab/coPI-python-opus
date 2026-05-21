@@ -59,6 +59,10 @@
                         {% if active_page == 'proposals' %}text-indigo-600 font-semibold{% endif %}">
                         Proposals
                     </a>
+                    <a href="/podcast/settings" class="text-gray-600 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium
+                        {% if active_page == 'podcast' %}text-indigo-600 font-semibold{% endif %}">
+                        Podcast
+                    </a>
                     {% if current_user.is_admin and not impersonation_banner %}
                     <a href="/admin/users" class="text-gray-600 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium
                         {% if active_page == 'admin' %}text-indigo-600 font-semibold{% endif %}">

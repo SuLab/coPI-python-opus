@@ -25,7 +25,7 @@
             to receive audio episodes automatically. The URL is stable and does not require login.
         </p>
         <div class="flex items-center gap-2">
-            <input type="text" readonly value="{{ feed_url }}"
+            <input type="text" readonly
                    id="feed-url-input"
                    class="flex-1 text-xs bg-white border border-indigo-300 rounded-lg px-3 py-2 font-mono text-gray-700 focus:outline-none" />
             <button type="button"
@@ -34,16 +34,53 @@
                 Copy
             </button>
         </div>
+        <script>
+            document.getElementById('feed-url-input').value = window.location.origin + '{{ feed_path }}';
+        </script>
         <p class="text-xs text-indigo-500 mt-2">
+            {% if podcast_enabled %}
             New episodes are generated daily at 9am UTC. You can also
             <button type="button" id="generate-btn"
                     onclick="triggerGenerate()"
                     class="underline hover:text-indigo-700">generate one now</button>.
+            {% else %}
+            Enable the podcast below to start receiving daily episodes.
+            {% endif %}
         </p>
         <p id="generate-status" class="text-xs text-indigo-700 mt-1 hidden"></p>
     </div>
 
+    <!-- Feed URL card note when disabled -->
+    {% if not podcast_enabled %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-6 text-sm text-yellow-800">
+        Podcast generation is currently <strong>disabled</strong>. Enable it below to start receiving daily briefings.
+    </div>
+    {% endif %}
+
     <form method="POST" action="/podcast/settings">
+        <input type="hidden" name="podcast_enabled" value="0" />
+
+        <!-- Enable / disable toggle -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-4 flex items-center justify-between">
+            <div>
+                <h2 class="text-base font-semibold text-gray-800">Enable Podcast</h2>
+                <p class="text-sm text-gray-500 mt-0.5">
+                    When enabled, a new research briefing is generated daily at 9am UTC and added to your feed.
+                </p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-6 shrink-0">
+                <input type="checkbox" name="podcast_enabled" value="1"
+                       id="podcast-enabled-toggle"
+                       {% if podcast_enabled %}checked{% endif %}
+                       class="sr-only peer"
+                       onchange="this.form.querySelector('input[type=hidden][name=podcast_enabled]').disabled = this.checked">
+                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500
+                            rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white
+                            after:content-[''] after:absolute after:top-[2px] after:left-[2px]
+                            after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5
+                            after:transition-all peer-checked:bg-indigo-600"></div>
+            </label>
+        </div>
 
         <!-- Voice selection -->
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-4">
@@ -125,6 +162,25 @@
             Changes take effect on the next scheduled podcast run (daily at 9am UTC).
         </p>
     </form>
+
+    {% if recent_episodes %}
+    <!-- Recent episodes -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
+        <h2 class="text-base font-semibold text-gray-800 mb-3">Recent Episodes</h2>
+        <ul class="divide-y divide-gray-100">
+            {% for ep in recent_episodes %}
+            <li class="py-2 flex items-center gap-3">
+                <span class="text-xs text-gray-400 whitespace-nowrap font-mono">{{ ep.episode_date }}</span>
+                <a href="/podcast/users/{{ current_user.id }}/audio/{{ ep.episode_date }}.mp3"
+                   class="text-sm text-indigo-600 hover:underline truncate"
+                   title="{{ ep.paper_title }}">
+                    {{ ep.paper_title }}
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
 

@@ -1006,6 +1006,19 @@ async def admin_podcast(
         p.agent_id: p for p in prefs_result.scalars().all() if p.agent_id is not None
     }
 
+    # LLM usage stats for podcast phases (simulation_run_id IS NULL)
+    llm_stats_result = await db.execute(
+        select(
+            func.count(LlmCallLog.id).label("call_count"),
+            func.coalesce(func.sum(LlmCallLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(LlmCallLog.output_tokens), 0).label("output_tokens"),
+        ).where(
+            LlmCallLog.simulation_run_id.is_(None),
+            LlmCallLog.phase.in_(["podcast_select", "podcast_summarize"]),
+        )
+    )
+    llm_stats = llm_stats_result.one()
+
     settings = get_settings()
     base_url = settings.podcast_base_url or settings.base_url
 
@@ -1024,6 +1037,9 @@ async def admin_podcast(
             agent_filter=agent_filter,
             base_url=base_url,
             prefs_by_agent=prefs_by_agent,
+            llm_call_count=llm_stats.call_count,
+            llm_input_tokens=llm_stats.input_tokens,
+            llm_output_tokens=llm_stats.output_tokens,
         ),
     )
 
