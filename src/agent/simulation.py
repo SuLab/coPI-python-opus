@@ -724,6 +724,10 @@ class SimulationEngine:
             has_new = self.message_log.has_new_reply_from_other(
                 thread.thread_id, agent.agent_id, agent.state.last_seen_cursor,
             )
+            if has_new:
+                # Genuine new reply from the other agent — reset empty-response
+                # backoff so we give the thread a fresh attempt.
+                thread.empty_response_count = 0
             if has_new or thread.has_pending_reply:
                 # Promote to durable flag so a failed/empty/exception reply
                 # attempt is retried on the next turn. The cursor advances
@@ -847,10 +851,17 @@ class SimulationEngine:
             response_text = _extract_slack_message(response_text)
 
             if not response_text or not response_text.strip():
+                thread.empty_response_count += 1
                 logger.warning(
-                    "[%s] Phase 4: Empty/unparseable response for thread %s, skipping",
-                    agent.agent_id, thread.thread_id,
+                    "[%s] Phase 4: Empty/unparseable response for thread %s (count=%d), skipping",
+                    agent.agent_id, thread.thread_id, thread.empty_response_count,
                 )
+                if thread.empty_response_count >= 2:
+                    thread.has_pending_reply = False
+                    logger.info(
+                        "[%s] Phase 4: Backing off thread %s after %d empty responses",
+                        agent.agent_id, thread.thread_id, thread.empty_response_count,
+                    )
                 return
 
             # Funding-thread draft validators: reject announcement-only and
@@ -886,6 +897,7 @@ class SimulationEngine:
             agent.message_count += 1
             thread.has_pending_reply = False
             thread.funding_reject_count = 0
+            thread.empty_response_count = 0
 
             # Check for thread outcome
             await self._check_thread_outcome(agent, thread, response_text)
